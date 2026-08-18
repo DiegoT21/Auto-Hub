@@ -1,0 +1,13 @@
+FACTURA ELECTRONICA
+No. FE-000101
+Fecha de emision: 01/06/2026
+
+Cliente: Supermercados El Valle S.A.
+RUC: 8-123-45678
+
+Cantidad  Descripcion                      Precio Unit.  Total
+1         Licencia software mensual        100.00        100.00
+
+Subtotal: 100.00
+ITBMS (7%): 7.00
+Total: 107.00

@@ -1,0 +1,62 @@
+{
+  "patterns": {
+    "invoice_number": [
+      "(?i)(?:factura\\s*(?:electr[oó]nica)?|invoice|no\\.?)\\s*[:#]?\\s*(FE[-\\s]?\\d+|\\d{4,})",
+      "(?i)\\b(FE-\\d{3,})\\b",
+      "(?i)CUFE[^\\n]*\\n[^\\n]*?(FE-\\d+)"
+    ],
+    "date": [
+      "(?i)fecha(?:\\s+de\\s+emisi[oó]n)?\\s*[:.]?\\s*(\\d{2}/\\d{2}/\\d{4})",
+      "(?i)fecha(?:\\s+de\\s+emisi[oó]n)?\\s*[:.]?\\s*(\\d{4}-\\d{2}-\\d{2})",
+      "(?i)fecha\\s*[:.]?\\s*(\\d{2}-\\d{2}-\\d{4})"
+    ],
+    "ruc": [
+      "(?i)r\\.?u\\.?c\\.?\\s*(?:cliente|receptor)?\\s*[:.]?\\s*(\\d{1,2}-\\d{3,4}-\\d{4,6})",
+      "(?i)r\\.?u\\.?c\\.?\\s*[:.]?\\s*(\\d{1,2}-\\d{3,4}-\\d{4,6})"
+    ],
+    "customer": [
+      "(?i)(?:cliente|receptor|raz[oó]n\\s+social)\\s*[:.]?\\s*(.+?)(?:\\n|r\\.?u\\.?c|RUC)",
+      "(?i)nombre\\s*[:.]?\\s*(.+?)(?:\\n|r\\.?u\\.?c|RUC)"
+    ],
+    "subtotal": [
+      "(?i)sub[-\\s]?total\\s*[:.]?\\s*\\$?\\s*([\\d,]+\\.\\d{2})",
+      "(?i)sub[-\\s]?total\\s*[:.]?\\s*\\$?\\s*([\\d,]+)"
+    ],
+    "itbms": [
+      "(?i)(?:itbms|i\\.?t\\.?b\\.?m\\.?s|impuesto|iva|tax)\\s*[:.]?\\s*\\$?\\s*([\\d,]+\\.\\d{2})",
+      "(?i)(?:itbms|impuesto)\\s*\\(?7\\%?\\)?\\s*[:.]?\\s*\\$?\\s*([\\d,]+\\.\\d{2})"
+    ],
+    "total": [
+      "(?i)total\\s*(?:a\\s+pagar|factura|general)?\\s*[:.]?\\s*\\$?\\s*([\\d,]+\\.\\d{2})",
+      "(?i)total\\s*[:.]?\\s*\\$?\\s*([\\d,]+\\.\\d{2})"
+    ]
+  },
+  "line_table_headers": {
+    "quantity": ["cantidad", "cant", "qty", "cant."],
+    "description": ["descripcion", "descripción", "detalle", "producto", "concepto", "item"],
+    "unit_price": ["precio unit", "precio unit.", "p. unit", "p.unit", "unitario", "precio"],
+    "amount": ["total", "importe", "monto", "subtotal linea"]
+  },
+    "skip_line_keywords": [
+        "subtotal",
+        "sub-total",
+        "itbms",
+        "impuesto",
+        "total a pagar",
+        "total factura",
+        "total general",
+        "cufe",
+        "factura electronica",
+        "fecha",
+        "ruc",
+        "cliente",
+        "cantidad",
+        "descripcion",
+        "precio unit",
+        "precio unit."
+    ],
+  "defaults": {
+    "tasa_itbms": 0.07,
+    "cliente_codigo_prefix": "PDF"
+  }
+}

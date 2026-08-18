@@ -1,0 +1,69 @@
+{
+  "excel_layout": {
+    "sheet_name": "Sales Invoicing",
+    "header_cells": {
+      "customer_id": "B3",
+      "ship_to": "B4",
+      "invoice_date": "B5",
+      "due_date": "F5",
+      "invoice_no": "B6",
+      "ship_via": "B7",
+      "ar_account": "F7",
+      "sales_rep": "B8"
+    },
+    "line_header_row": 10,
+    "line_start_row": 11,
+    "line_columns": {
+      "quantity": "A",
+      "item": "B",
+      "description": "C",
+      "gl_account": "D",
+      "unit_price": "E",
+      "tax": "F",
+      "amount": "G",
+      "job": "H"
+    },
+    "footer_cells": {
+      "sales_tax": "G24",
+      "invoice_total": "G25",
+      "net_due": "G26"
+    }
+  },
+  "field_labels": {
+    "B3": "Customer ID",
+    "B4": "Ship to",
+    "B5": "Invoice date",
+    "F5": "Due date",
+    "B6": "Invoice No.",
+    "B7": "Ship via",
+    "F7": "A/R account",
+    "B8": "Sales rep",
+    "G24": "Sales tax (ITBMS)",
+    "G25": "Invoice total",
+    "G26": "Net due"
+  },
+  "tax_mapping": {
+    "0": "0",
+    "0.07": "1",
+    "7": "1",
+    "ITBMS7": "1",
+    "EXENTO": "0"
+  },
+  "defaults": {
+    "ship_via": "Airborne",
+    "ar_account": "1101",
+    "gl_account": "4001"
+  },
+  "automation": {
+    "excel_window_title_contains": "Excel",
+    "delay_between_fields": 0.55,
+    "delay_after_open": 5.0,
+    "typing_interval": 0.04,
+    "use_visible_typing": true,
+    "max_chars_visible_type": 30
+  },
+  "paths": {
+    "template": "assets/sage_simulator_template.xlsx",
+    "output_dir": "output/sage_simulator"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "github_repo": "DiegoT21/Auto-Hub",
+  "branch": "main",
+  "source_subdir": "",
+  "notes": "Boton Actualizar: git pull o ZIP de este repo. No pisa connections.json ni app_id.txt."
+}

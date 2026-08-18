@@ -1,0 +1,79 @@
+{
+  "client": {
+    "id": "backup-adminposper",
+    "name": "PsKloud Backup",
+    "country": "PA"
+  },
+  "database": {
+    "driver": "mysql",
+    "host": "127.0.0.1",
+    "port": 3306,
+    "database": "adminposper",
+    "user": "root",
+    "password": "",
+    "charset": "utf8mb4"
+  },
+  "extraction": {
+    "source": "canonical_view",
+    "mode": "incremental",
+    "watermark_field": "fecha_emision",
+    "watermark_id_field": "factura_id",
+    "watermark_file": "state/last_sync_adminposper.json",
+    "canonical_view": "vw_autohub_invoice_lines",
+    "filter_unexported": false,
+    "tables": {
+      "movement": "opermv",
+      "headers": "operti"
+    }
+  },
+  "mapping": {
+    "sage_columns": [
+      "Invoice Number",
+      "Date",
+      "Customer ID",
+      "Customer Name",
+      "RUC",
+      "Item",
+      "GL Account",
+      "Description",
+      "Quantity",
+      "Unit Price",
+      "Line Amount",
+      "Tax Code",
+      "Tax Amount",
+      "Invoice Total"
+    ],
+    "field_map": {
+      "Invoice Number": "numero_factura",
+      "Date": "fecha_emision",
+      "Customer ID": "cliente_codigo",
+      "Customer Name": "cliente_nombre",
+      "RUC": "ruc",
+      "GL Account": "cuenta_gl",
+      "Description": "descripcion",
+      "Quantity": "cantidad",
+      "Unit Price": "precio_unitario",
+      "Line Amount": "total_linea",
+      "Tax Code": "codigo_impuesto",
+      "Tax Amount": "itbms_linea",
+      "Invoice Total": "total_factura"
+    },
+    "defaults": {
+      "cuenta_gl": "4100",
+      "codigo_impuesto": "ITBMS7"
+    }
+  },
+  "validation": {
+    "ruc_pattern": "^[A-Z0-9\\-]+$",
+    "consumidor_final_values": ["CF", "CONSUMIDOR FINAL", "000000000", "0-00-000000"],
+    "itbms_rates": [0, 0.07],
+    "amount_tolerance": 0.05
+  },
+  "output": {
+    "format": "csv",
+    "delimiter": ",",
+    "encoding": "utf-8-sig",
+    "date_format": "%m/%d/%Y",
+    "output_dir": "output"
+  }
+}

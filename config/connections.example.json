@@ -1,0 +1,24 @@
+{
+  "active_id": "local_sqlite",
+  "connections": [
+    {
+      "id": "local_sqlite",
+      "name": "SQLite local (demo)",
+      "driver": "sqlite",
+      "sqlite_path": "data/pskloud_demo.db",
+      "schema": "normalized_tables"
+    },
+    {
+      "id": "mysql_produccion",
+      "name": "Produccion — admin000002",
+      "driver": "mysql",
+      "schema": "pskloud_canonical",
+      "host": "TU_HOST",
+      "port": 3306,
+      "database": "admin000002",
+      "user": "root",
+      "password": "",
+      "canonical_view": "autohub_v_facturas"
+    }
+  ]
+}

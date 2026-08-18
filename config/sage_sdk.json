@@ -1,0 +1,17 @@
+{
+  "api_dir": "C:\\Program Files (x86)\\Sage\\Peachtree\\API",
+  "api_dll": "Sage.Peachtree.API.dll",
+  "resolver_dll": "Sage.Peachtree.API.Resolver.dll",
+  "version": "2024.0",
+  "application_id": "",
+  "application_id_help": "Obtener de Sage: sdk.50us@sage.com. Sin ID solo abren companias sample oficiales.",
+  "test_company": {
+    "name": "LYL CONST CIA  de PRUEBA",
+    "path": "C:\\Sage\\Peachtree\\Company\\lylconci"
+  },
+  "notes": [
+    "Dejar Sage 50 cerrado o abierto; la primera vez puede pedir autorizar la app en Sage.",
+    "application_id vacio solo sirve para companias sample oficiales de Sage.",
+    "Para produccion piden Application ID a sdk.50us@sage.com (Sage 50 US SDK)."
+  ]
+}

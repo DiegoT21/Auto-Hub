@@ -1,0 +1,11 @@
+{
+  "name": "sage_import_demo",
+  "steps": [
+    {"action": "focus", "detail": "Activar ventana Sage 50", "delay_seconds": 0.5},
+    {"action": "menu", "detail": "Archivo > Importar registros", "delay_seconds": 0.4},
+    {"action": "file", "detail": "Seleccionar CSV en carpeta output", "delay_seconds": 0.4},
+    {"action": "map", "detail": "Confirmar columnas de importación", "delay_seconds": 0.4},
+    {"action": "import", "detail": "Procesar registros", "delay_seconds": 0.5},
+    {"action": "done", "detail": "Cerrar resumen de importación", "delay_seconds": 0.3}
+  ]
+}

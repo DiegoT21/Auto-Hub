@@ -1,0 +1,44 @@
+{
+  "customer_id": "INVERSIONES TERRANO",
+  "invoice_date": "2026-07-02",
+  "due_date": "2026-07-02",
+  "invoice_no": "7352",
+  "ship_via": "Airborne",
+  "ar_account": "1101",
+  "sales_rep": "",
+  "lines": [
+    {
+      "quantity": 3.0,
+      "item": "426005-1",
+      "description": "SIKA TELA REFORZADA (1.1M X 5MTS)",
+      "gl_account": "4001",
+      "unit_price": 6.2,
+      "tax": "1",
+      "amount": 18.6,
+      "job": ""
+    },
+    {
+      "quantity": 1.0,
+      "item": "515704",
+      "description": "SIKALASTIC 612 DE 15L",
+      "gl_account": "4031",
+      "unit_price": 220.0,
+      "tax": "1",
+      "amount": 220.0,
+      "job": ""
+    },
+    {
+      "quantity": 1.0,
+      "item": "426005-3",
+      "description": "SIKA TELA REFORZADA (1.1M X 5MTS)",
+      "gl_account": "4001",
+      "unit_price": -44.0,
+      "tax": "1",
+      "amount": -44.0,
+      "job": ""
+    }
+  ],
+  "sales_tax": 13.62,
+  "invoice_total": 208.22,
+  "net_due": 208.22
+}

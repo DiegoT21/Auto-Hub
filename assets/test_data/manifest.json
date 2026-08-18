@@ -1,0 +1,135 @@
+{
+  "source_sql": "C:\\Users\\diego\\Downloads\\EjemploFacturaSage\\EjemploFacturaSage.sql",
+  "invoice_count": 12,
+  "invoices": [
+    {
+      "invoice_number": "FAC-00003117",
+      "date": "2023-12-29",
+      "customer": "MAXI 26, S.A.",
+      "ruc": "1-556-6384022018",
+      "total": 314.58,
+      "line_count": 2
+    },
+    {
+      "invoice_number": "FAC-00003116",
+      "date": "2023-12-29",
+      "customer": "HERMANOS PALACIOS, S.A.",
+      "ruc": "2-345-915877",
+      "total": 69.5,
+      "line_count": 1
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122800000031140280115096679902",
+      "date": "2023-12-28",
+      "customer": "GISBOURNE DEVELOPMENT TRADING, S.A.",
+      "ruc": "1-314-6501609085",
+      "total": 125.19,
+      "line_count": 2
+    },
+    {
+      "invoice_number": "FAC-00003115",
+      "date": "2023-12-28",
+      "customer": "NIMA NIUFAR",
+      "ruc": "E-8-113646",
+      "total": 48.1,
+      "line_count": 1
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122700000031130280115817380584",
+      "date": "2023-12-27",
+      "customer": "RICARDO PEREZ, S.A.",
+      "ruc": "3-054-1468335",
+      "total": 64.19,
+      "line_count": 2
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122700000031120280114046307188",
+      "date": "2023-12-27",
+      "customer": "ACE INTERNATIONAL HARDWARE CORP.",
+      "ruc": "1-543-0249148718",
+      "total": 42.8,
+      "line_count": 2
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122600000031080280110198568889",
+      "date": "2023-12-26",
+      "customer": "BOWLAND GROUP PANAMA, S.A.",
+      "ruc": "1-557-2776322022",
+      "total": 53.5,
+      "line_count": 1
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122300000031070280117329004472",
+      "date": "2023-12-23",
+      "customer": "FARMACIA ARROCHA, S.A.",
+      "ruc": "3-462-6676470",
+      "total": 208.38,
+      "line_count": 1
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122300000031060280117004028177",
+      "date": "2023-12-23",
+      "customer": "TECH SOLUTIONS, S.A.",
+      "ruc": "9-351-641522515",
+      "total": 21.4,
+      "line_count": 1
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122200000031050280111508899722",
+      "date": "2023-12-22",
+      "customer": "DISTRIBUIDORA A.O.C. INTERNATIONAL, S.A.(DAOCISA)",
+      "ruc": "1-556-8744622019",
+      "total": 287.82,
+      "line_count": 3
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122200000031040280115606711151",
+      "date": "2023-12-22",
+      "customer": "FRANQUICIAS F&B,  S.A.",
+      "ruc": "1-967-4361734718",
+      "total": 26.75,
+      "line_count": 1
+    },
+    {
+      "invoice_number": "FE01200001220535-1-586334-4300002023122200000031030280117891252157",
+      "date": "2023-12-22",
+      "customer": "OFIPLANET, S.A.",
+      "ruc": "1-556-4295322017",
+      "total": 95.23,
+      "line_count": 1
+    }
+  ],
+  "batch_csv": "assets\\test_data\\csv\\sage_batch_all.csv",
+  "single_csv_dir": "assets\\test_data\\csv\\sage_single",
+  "single_csv_files": [
+    "assets\\test_data\\csv\\sage_single\\FAC-00003117.csv",
+    "assets\\test_data\\csv\\sage_single\\FAC-00003116.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122800000031140280115096679902.csv",
+    "assets\\test_data\\csv\\sage_single\\FAC-00003115.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122700000031130280115817380584.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122700000031120280114046307188.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122600000031080280110198568889.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122300000031070280117329004472.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122300000031060280117004028177.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122200000031050280111508899722.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122200000031040280115606711151.csv",
+    "assets\\test_data\\csv\\sage_single\\FE01200001220535-1-586334-4300002023122200000031030280117891252157.csv"
+  ],
+  "raw_operti_csv": "assets\\test_data\\csv\\pskloud_raw\\operti_fac_sample.csv",
+  "raw_opermv_csv": "assets\\test_data\\csv\\pskloud_raw\\opermv_fac_sample.csv",
+  "pdf_files": [
+    "assets\\test_data\\pdf\\FAC-00003117.pdf",
+    "assets\\test_data\\pdf\\FAC-00003116.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122800000031140280115096679902.pdf",
+    "assets\\test_data\\pdf\\FAC-00003115.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122700000031130280115817380584.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122700000031120280114046307188.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122600000031080280110198568889.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122300000031070280117329004472.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122300000031060280117004028177.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122200000031050280111508899722.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122200000031040280115606711151.pdf",
+    "assets\\test_data\\pdf\\FE01200001220535-1-586334-4300002023122200000031030280117891252157.pdf"
+  ],
+  "sqlite_db": "data\\pskloud_demo.db"
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "sentAt": "2026-08-18T14:30:00Z",
+    "record": {
+      "factura_id": "*0000001",
+      "numero_factura": "*0000001",
+      "fecha_emision": "2024-01-26",
+      "subtotal": "33.84",
+      "itbms_factura": "2.37",
+      "total_factura": "36.21",
+      "cliente_codigo": "8-770-1583",
+      "cliente_nombre": "MIGUEL DEL RIO",
+      "ruc": "CF",
+      "linea": "1",
+      "descripcion": "SIKAFLEX 221 BLANCO (300ML)",
+      "cantidad": "3",
+      "precio_unitario": "7.70",
+      "tasa_itbms": "0.0700",
+      "total_linea": "21.945"
+    }
+  },
+  {
+    "sentAt": "2026-08-18T14:30:00Z",
+    "record": {
+      "factura_id": "*0000001",
+      "numero_factura": "*0000001",
+      "fecha_emision": "2024-01-26",
+      "subtotal": "33.84",
+      "itbms_factura": "2.37",
+      "total_factura": "36.21",
+      "cliente_codigo": "8-770-1583",
+      "cliente_nombre": "MIGUEL DEL RIO",
+      "ruc": "CF",
+      "linea": "2",
+      "descripcion": "SIKACRYL150 BLANCO (300ML)",
+      "cantidad": "2",
+      "precio_unitario": "4.10",
+      "tasa_itbms": "0.0700",
+      "total_linea": "7.79"
+    }
+  },
+  {
+    "sentAt": "2026-08-18T14:30:00Z",
+    "record": {
+      "factura_id": "*0000001",
+      "numero_factura": "*0000001",
+      "fecha_emision": "2024-01-26",
+      "subtotal": "33.84",
+      "itbms_factura": "2.37",
+      "total_factura": "36.21",
+      "cliente_codigo": "8-770-1583",
+      "cliente_nombre": "MIGUEL DEL RIO",
+      "ruc": "CF",
+      "linea": "3",
+      "descripcion": "SIKACRYL150 BLANCO (300ML)",
+      "cantidad": "1",
+      "precio_unitario": "4.10",
+      "tasa_itbms": "0.0700",
+      "total_linea": "4.10"
+    }
+  }
+]
