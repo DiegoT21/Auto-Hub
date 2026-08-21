@@ -28,7 +28,9 @@ namespace AutoHub.SageInvoiceProbe
         // Cliente real de la empresa de prueba (AUTOHUB-TEST a veces no sirve para facturar)
         private const string TestCustomerId = "C SUAREZ TORRE 1";
         private const string DefaultSamplePath = "sample_invoice.json";
-        private const string ProbeVersion = "2026-08-18-autohub";
+        private const string ProbeVersion = "2026-08-19-always-allow";
+        private static PeachtreeSession _session;
+        private static Company _company;
 
         private static string NormalizeCompanyName(string value)
         {
@@ -71,28 +73,46 @@ namespace AutoHub.SageInvoiceProbe
             var targetName = DefaultCompany;
             var samplePath = DefaultSamplePath;
             var appId = Environment.GetEnvironmentVariable("SAGE_APP_ID") ?? "";
+            var authOnly = false;
 
-            // args: [company] [appId] [sampleJson]
+            // args: [company] [appId] [sampleJson]  + opcional --auth-only
             // o solo [sampleJson] si el primer arg termina en .json
-            if (args.Length >= 1)
+            foreach (var arg in args)
             {
-                if (args[0].EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-                    samplePath = args[0];
-                else
-                    targetName = args[0];
+                if (string.Equals(arg, "--auth-only", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(arg, "/auth-only", StringComparison.OrdinalIgnoreCase))
+                {
+                    authOnly = true;
+                }
             }
-            if (args.Length >= 2 && !args[0].EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-                appId = args[1];
-            if (args.Length >= 3)
-                samplePath = args[2];
-            else if (args.Length == 2 && args[0].EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-                appId = args[1];
+            var positional = args.Where(a =>
+                !string.Equals(a, "--auth-only", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(a, "/auth-only", StringComparison.OrdinalIgnoreCase)).ToArray();
 
-            Console.WriteLine("Auto-Hub - prueba ESCRITURA factura Sage 50 SDK (US)");
+            if (positional.Length >= 1)
+            {
+                if (positional[0].EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    samplePath = positional[0];
+                else
+                    targetName = positional[0];
+            }
+            if (positional.Length >= 2 && !positional[0].EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                appId = positional[1];
+            if (positional.Length >= 3)
+                samplePath = positional[2];
+            else if (positional.Length == 2 && positional[0].EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                appId = positional[1];
+
+            Console.WriteLine(authOnly
+                ? "Auto-Hub - autorizar acceso Sage 50 SDK (US)"
+                : "Auto-Hub - prueba ESCRITURA factura Sage 50 SDK (US)");
             Console.WriteLine("VERSION: " + ProbeVersion);
             Console.WriteLine("Empresa objetivo: " + targetName);
-            Console.WriteLine("Cliente Sage:     " + TestCustomerId);
-            Console.WriteLine("Sample JSON:      " + samplePath);
+            if (!authOnly)
+            {
+                Console.WriteLine("Cliente Sage:     " + TestCustomerId);
+                Console.WriteLine("Sample JSON:      " + samplePath);
+            }
             Console.WriteLine("SOLO usar en empresa de PRUEBA.");
             Console.WriteLine("Fuente CS:        " + typeof(Program).Assembly.Location);
             if (string.IsNullOrWhiteSpace(appId))
@@ -103,6 +123,9 @@ namespace AutoHub.SageInvoiceProbe
             }
             Console.WriteLine("Application ID: (configurado, " + appId.Length + " chars)");
             Console.WriteLine();
+
+            if (authOnly)
+                return RunAuthOnly(targetName, appId);
 
             List<Dictionary<string, object>> records;
             try
@@ -149,6 +172,7 @@ namespace AutoHub.SageInvoiceProbe
             try
             {
                 session = new PeachtreeSession();
+                _session = session;
                 session.Begin(appId);
                 Console.WriteLine("Sesion iniciada: " + session.SessionActive);
 
@@ -172,6 +196,7 @@ namespace AutoHub.SageInvoiceProbe
                 }
 
                 company = session.Open(companyId);
+                _company = company;
                 Console.WriteLine("Empresa abierta via SDK.");
                 Console.WriteLine();
 
@@ -298,14 +323,7 @@ namespace AutoHub.SageInvoiceProbe
             }
             finally
             {
-                if (company != null)
-                {
-                    try { company.Close(); } catch { }
-                }
-                if (session != null)
-                {
-                    try { session.End(); } catch { }
-                }
+                ReleaseSage();
             }
         }
 
@@ -1059,27 +1077,84 @@ namespace AutoHub.SageInvoiceProbe
             return s.Substring(0, max - 3) + "...";
         }
 
+        private static int RunAuthOnly(string targetName, string appId)
+        {
+            PeachtreeSession session = null;
+            try
+            {
+                session = new PeachtreeSession();
+                _session = session;
+                session.Begin(appId);
+                Console.WriteLine("Sesion iniciada: " + session.SessionActive);
+
+                var companies = session.CompanyList();
+                var companyId = companies.Cast<CompanyIdentifier>()
+                    .FirstOrDefault(c => CompanyNamesEqual(c.CompanyName, targetName));
+                if (companyId == null)
+                {
+                    Console.WriteLine("ERROR: No se encontro la empresa: " + targetName);
+                    WaitBeforeExit();
+                    return 1;
+                }
+
+                var auth = WaitForGrant(session, companyId);
+                if (auth != AuthorizationResult.Granted)
+                {
+                    Console.WriteLine("ERROR: sin autorizacion Granted. Estado: " + auth);
+                    Console.WriteLine("Deja Sage ABIERTO en la empresa de prueba y elige Always Allow.");
+                    WaitBeforeExit();
+                    return 2;
+                }
+
+                Console.WriteLine("OK - Acceso Granted. Ya no deberia pedir Allow en cada carga.");
+                Console.WriteLine("Puedes cerrar Sage si quieres y usar SDK prueba.");
+                WaitBeforeExit();
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("ERROR: " + ex.Message);
+                if (ex.InnerException != null)
+                    Console.WriteLine("  Inner: " + ex.InnerException.Message);
+                WaitBeforeExit();
+                return 99;
+            }
+            finally
+            {
+                ReleaseSage();
+            }
+        }
+
         private static AuthorizationResult WaitForGrant(PeachtreeSession session, CompanyIdentifier companyId)
         {
             Console.WriteLine("Solicitando acceso...");
             var auth = session.RequestAccess(companyId);
             Console.WriteLine("Autorizacion: " + auth);
 
+            if (auth == AuthorizationResult.Granted)
+            {
+                Console.WriteLine("Already granted (Always Allow previo). No hace falta reabrir Sage.");
+                return auth;
+            }
+
             if (auth == AuthorizationResult.Pending)
             {
+                // 36 x 5s = 3 min. El dialogo solo aparece si Sage tiene la empresa abierta.
+                const int maxTries = 36;
                 Console.WriteLine();
-                Console.WriteLine("=== ACCION EN SAGE ===");
-                Console.WriteLine("1. Close Company en Sage");
-                Console.WriteLine("2. Abre LYL CONST CIA de PRUEBA");
-                Console.WriteLine("3. Always Allow");
+                Console.WriteLine("=== ACCION EN SAGE (una sola vez) ===");
+                Console.WriteLine("1. Deja Sage 50 ABIERTO (no lo cierres).");
+                Console.WriteLine("2. Abre la empresa: LYL CONST CIA de PRUEBA");
+                Console.WriteLine("3. En el dialogo, elige ALWAYS ALLOW (no solo Allow).");
+                Console.WriteLine("4. Con Always Allow, las siguientes cargas no piden permiso.");
                 Console.WriteLine("Esperando hasta 3 minutos...");
                 Console.WriteLine();
 
-                for (int i = 0; i < 36; i++)
+                for (int i = 0; i < maxTries; i++)
                 {
                     Thread.Sleep(5000);
                     auth = session.RequestAccess(companyId);
-                    Console.WriteLine("  Reintento " + (i + 1) + "/36 -> " + auth);
+                    Console.WriteLine("  Reintento " + (i + 1) + "/" + maxTries + " -> " + auth);
                     if (auth == AuthorizationResult.Granted || auth == AuthorizationResult.Denied)
                         break;
                 }
@@ -1088,10 +1163,39 @@ namespace AutoHub.SageInvoiceProbe
             return auth;
         }
 
-        private static void WaitBeforeExit()
+        private static bool IsNoPause()
         {
             var noPause = Environment.GetEnvironmentVariable("SAGE_SDK_NOPAUSE");
-            if (!string.IsNullOrWhiteSpace(noPause) && noPause != "0")
+            return !string.IsNullOrWhiteSpace(noPause) && noPause != "0";
+        }
+
+        private static void ReleaseSage()
+        {
+            if (_company != null)
+            {
+                try { _company.Close(); } catch { }
+                _company = null;
+            }
+            if (_session != null)
+            {
+                try { _session.End(); } catch { }
+                _session = null;
+            }
+            try
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+            catch { }
+            try { Thread.Sleep(500); } catch { }
+        }
+
+        private static void WaitBeforeExit()
+        {
+            // Soltar Actian ANTES de pausar. Si el Hub mata el proceso
+            // durante "Presione Enter", la sesion quedaba colgada.
+            ReleaseSage();
+            if (IsNoPause())
                 return;
             Console.WriteLine();
             Console.WriteLine("Presione Enter para cerrar...");

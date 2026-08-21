@@ -1,5 +1,5 @@
 pandas>=2.0
-mysql-connector-python>=8.0
+mysql-connector-python>=8.0.33,<9
 customtkinter>=5.2.0
 CTkTable>=1.1
 openpyxl>=3.1.0

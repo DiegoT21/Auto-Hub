@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 *.exe
+build/
+dist/
+AutoHub.spec
 output/
 state/
 data/*.db

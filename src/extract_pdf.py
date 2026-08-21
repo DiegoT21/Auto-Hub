@@ -164,8 +164,11 @@ def _lines_from_tables(
 
             if quantity is None or quantity <= 0:
                 quantity = 1.0
-            if unit_price is None:
-                unit_price = round(amount / quantity, 2)
+            amount = round(amount, 2)
+            if unit_price is None or abs(round(quantity * unit_price, 2) - amount) > 0.05:
+                unit_price = round(amount / quantity, 4)
+            else:
+                unit_price = round(unit_price, 4)
 
             line_no += 1
             lines.append(
@@ -212,15 +215,17 @@ def _lines_from_text(text: str, pdf_config: dict[str, Any]) -> list[dict[str, An
         if _should_skip_line(description, skip_keywords):
             continue
 
-        quantity = float(match.group("qty"))
+        quantity = float(match.group("qty")) or 1.0
         unit_price = float(match.group("price"))
-        total_linea = float(match.group("total"))
+        total_linea = round(float(match.group("total")), 2)
+        if abs(round(quantity * unit_price, 2) - total_linea) > 0.05:
+            unit_price = round(total_linea / quantity, 4)
         lines.append(
             {
                 "linea": len(lines) + 1,
                 "descripcion": description,
                 "cantidad": quantity,
-                "precio_unitario": unit_price,
+                "precio_unitario": round(unit_price, 4),
                 "tasa_itbms": default_tax,
                 "total_linea": total_linea,
             }

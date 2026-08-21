@@ -49,4 +49,7 @@ def transform_rows(rows: list[dict[str, Any]], config: dict[str, Any]) -> pd.Dat
         )
 
     frame = pd.DataFrame(transformed)
+    for col in sage_columns:
+        if col not in frame.columns:
+            frame[col] = ""
     return frame[sage_columns]

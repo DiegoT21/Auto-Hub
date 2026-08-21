@@ -2,5 +2,5 @@
   "github_repo": "DiegoT21/Auto-Hub",
   "branch": "main",
   "source_subdir": "",
-  "notes": "Boton Actualizar: git pull o ZIP de este repo. No pisa connections.json ni app_id.txt."
+  "notes": "Ejecutable: ZIP local AutoHub-update.zip por AnyDesk. Codigo fuente: git pull o ZIP de GitHub. No pisa connections.json ni app_id.txt."
 }

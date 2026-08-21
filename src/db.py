@@ -8,6 +8,12 @@ from typing import Any
 import mysql.connector
 from mysql.connector import MySQLConnection
 
+try:
+    import mysql.connector.locales.eng.client_error
+    import mysql.connector.plugins.mysql_native_password
+except Exception:
+    pass
+
 
 def load_config(config_path: Path) -> dict[str, Any]:
     with config_path.open(encoding="utf-8") as handle:
@@ -20,21 +26,41 @@ def connect(config: dict[str, Any], root: Path) -> Any:
 
     if driver == "sqlite":
         db_path = root / db["sqlite_path"]
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not db_path.exists():
+            raise FileNotFoundError(
+                "No hay base SQLite local.\n"
+                "Elige 'Produccion — admin000002' y pulsa Usar conexion, luego Buscar."
+            )
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
     if driver == "mysql":
-        return mysql.connector.connect(
-            host=db["host"],
-            port=db.get("port", 3306),
-            database=db["database"],
-            user=db["user"],
-            password=db["password"],
-            charset=db.get("charset", "utf8mb4"),
-            connection_timeout=8,
-            autocommit=True,
-        )
+        host = str(db.get("host") or "").strip()
+        try:
+            port = int(db.get("port") or 3306)
+        except (TypeError, ValueError):
+            port = 3306
+        try:
+            return mysql.connector.connect(
+                host=host,
+                port=port,
+                database=db["database"],
+                user=db["user"],
+                password=db["password"],
+                charset=db.get("charset", "utf8mb4"),
+                connection_timeout=8,
+                autocommit=True,
+                use_pure=True,
+                auth_plugin="mysql_native_password",
+            )
+        except Exception as exc:
+            raise ConnectionError(
+                f"No se pudo conectar a MySQL {host}:{port}. "
+                "Revisa host/puerto, que el PC tenga red, y pulsa Usar conexion. "
+                f"Detalle: {exc}"
+            ) from exc
 
     raise ValueError(f"Driver no soportado: {driver}")
 

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from tkinter import ttk
 from typing import Callable
 
 import customtkinter as ctk
 import pandas as pd
-from CTkTable import CTkTable
 
 from app import theme
 from app.components import btn, glass_card
@@ -13,7 +13,7 @@ from src.preview_utils import filter_frame_by_invoice, invoice_numbers_from_fram
 
 
 class EditableDataGrid(ctk.CTkFrame):
-    """Tabla editable con filtro por factura y acciones de flujo."""
+    """Tabla editable (ttk.Treeview, no CTkTable) con filtro por factura."""
 
     def __init__(
         self,
@@ -34,13 +34,14 @@ class EditableDataGrid(ctk.CTkFrame):
         self._sage_template_columns: list[str] = []
         self._selected_row: int | None = None
         self._selected_col: int | None = None
-        self._table: CTkTable | None = None
+        self._table: ttk.Treeview | None = None
         self._dirty = False
 
         self._build_toolbar()
         self._build_summary_bar()
         self._table_container = glass_card(self, radius=theme.BENTO_RADIUS_SM)
         self._table_container.pack(fill="both", expand=True, pady=(8, 0))
+        self._build_tree()
         self._build_bottom_actions()
 
     def _build_toolbar(self) -> None:
@@ -114,6 +115,26 @@ class EditableDataGrid(ctk.CTkFrame):
             justify="left",
         )
         self.summary_label.pack(fill="x", padx=16, pady=10)
+
+    def _build_tree(self) -> None:
+        wrap = ctk.CTkFrame(self._table_container, fg_color=theme.GLASS_BG)
+        wrap.pack(fill="both", expand=True, padx=8, pady=8)
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_rowconfigure(0, weight=1)
+
+        style = ttk.Style(wrap)
+        style.configure("AutoHub.Treeview", rowheight=24, font=("Segoe UI", 9))
+        style.configure("AutoHub.Treeview.Heading", font=("Segoe UI", 9, "bold"))
+
+        self._table = ttk.Treeview(wrap, show="headings", selectmode="browse", style="AutoHub.Treeview")
+        vsb = ttk.Scrollbar(wrap, orient="vertical", command=self._table.yview)
+        hsb = ttk.Scrollbar(wrap, orient="horizontal", command=self._table.xview)
+        self._table.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self._table.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        self._table.bind("<Double-1>", self._on_tree_double)
+        self._table.bind("<<TreeviewSelect>>", self._on_tree_select)
 
     def _build_bottom_actions(self) -> None:
         row = ctk.CTkFrame(self, fg_color="transparent")
@@ -219,109 +240,88 @@ class EditableDataGrid(ctk.CTkFrame):
         self._set_dirty(True)
         show_info(self.winfo_toplevel(), "Plantilla Sage", "Columnas Sage aplicadas.")
 
-    def _df_to_table_values(self) -> list[list[str]]:
-        if self._df.empty:
-            return [["Sin datos"]]
-        columns = [str(c) for c in self._df.columns]
-        rows: list[list[str]] = [columns]
-        for _, row in self._df.iterrows():
-            rows.append(["" if pd.isna(row[col]) else str(row[col]) for col in self._df.columns])
-        return rows
+    def _cell_text(self, value: object) -> str:
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+        return str(value)
 
     def _refresh_table(self) -> None:
-        if self._table is not None:
-            self._table.destroy()
-        values = self._df_to_table_values()
-        rows = len(values)
-        cols = len(values[0]) if values else 1
-        self._table = CTkTable(
-            master=self._table_container,
-            values=values,
-            header_color=theme.TABLE_HEADER,
-            colors=[theme.TABLE_ROW_EVEN, theme.TABLE_ROW_ODD],
-            hover=False,
-            corner_radius=10,
-            border_width=0,
-            text_color=theme.TEXT_PRIMARY,
-            font=theme.FONT_SMALL,
-            command=self._on_cell_click,
-        )
-        self._table.pack(fill="both", expand=True, padx=8, pady=8)
-        self._row_count = rows
-        self._col_count = cols
-        self._apply_selection_visual()
-
-    def _reset_all_cells(self) -> None:
         if self._table is None:
             return
-        for row in range(self._row_count):
-            for col in range(self._col_count):
-                if row == 0:
-                    fg, text = theme.TABLE_HEADER, theme.TEXT_PRIMARY
-                else:
-                    fg = theme.TABLE_ROW_EVEN if row % 2 == 0 else theme.TABLE_ROW_ODD
-                    text = theme.TEXT_PRIMARY
-                try:
-                    self._table.edit(row, col, fg_color=fg, text_color=text, border_width=0)
-                except Exception:
-                    pass
+        self._selected_row = None
+        self._selected_col = None
+        self._table.delete(*self._table.get_children())
+        if self._df.empty:
+            self._table["columns"] = ("mensaje",)
+            self._table.heading("mensaje", text="Sin datos")
+            self._table.column("mensaje", width=240, stretch=True)
+            return
+        columns = [str(c) for c in self._df.columns]
+        self._table["columns"] = columns
+        for col in columns:
+            self._table.heading(col, text=col)
+            self._table.column(col, width=120, minwidth=64, stretch=True)
+        for idx, row in enumerate(self._df.itertuples(index=False, name=None)):
+            values = [self._cell_text(v) for v in row]
+            self._table.insert("", "end", iid=str(idx), values=values)
 
-    def _apply_selection_visual(self) -> None:
+    def _on_tree_select(self, _event=None) -> None:
         if self._table is None:
             return
-        self._reset_all_cells()
-        if self._selected_row is None or self._selected_col is None:
+        sel = self._table.selection()
+        if not sel:
+            self._selected_row = None
             return
-        row, col = self._selected_row, self._selected_col
-        if 0 <= row < self._row_count and 0 <= col < self._col_count:
-            try:
-                self._table.edit(
-                    row,
-                    col,
-                    fg_color=theme.TABLE_SELECTED_CELL,
-                    text_color=("white", "white"),
-                    border_width=2,
-                    border_color=theme.CYAN,
-                )
-            except Exception:
-                pass
+        try:
+            self._selected_row = int(sel[0])
+        except ValueError:
+            self._selected_row = self._table.index(sel[0])
 
-    def _on_cell_click(self, cell: dict) -> None:
-        row, column = cell["row"], cell["column"]
-        if getattr(self, "_last_click", None) == (row, column):
-            self._edit_cell(row, column)
-            self.after(300, lambda: setattr(self, "_last_click", None))
+    def _on_tree_double(self, event) -> None:
+        if self._table is None:
             return
-        self._selected_row, self._selected_col = row, column
-        self._apply_selection_visual()
-        self._last_click = (row, column)
-        self.after(300, lambda: setattr(self, "_last_click", None))
+        row_id = self._table.identify_row(event.y)
+        col_id = self._table.identify_column(event.x)
+        if not row_id or not col_id:
+            return
+        try:
+            self._selected_row = int(row_id)
+        except ValueError:
+            self._selected_row = self._table.index(row_id)
+        self._selected_col = max(0, int(col_id.replace("#", "") or "1") - 1)
+        self._edit_cell(self._selected_row, self._selected_col)
 
     def _edit_cell(self, row: int, column: int) -> None:
-        if row == 0:
-            show_warning(self.winfo_toplevel(), "Encabezado", "Usa Renombrar columna para el encabezado.")
+        if self._df.empty or row < 0 or row >= len(self._df):
             return
-        data_row = row - 1
+        if column < 0 or column >= len(self._df.columns):
+            return
         col_name = self._df.columns[column]
-        current = self._df.at[data_row, col_name]
+        current = self._df.iat[row, column]
         value = ask_text(
             self.winfo_toplevel(),
             "Editar celda",
-            f"Columna: {col_name}\nFila: {data_row + 1}",
-            "" if pd.isna(current) else str(current),
+            f"Columna: {col_name}\nFila: {row + 1}",
+            self._cell_text(current),
         )
         if value is None:
             return
-        self._df.at[data_row, col_name] = value
+        self._df.iat[row, column] = value
         self._sync_view_to_full()
         self._apply_view()
         self._set_dirty(True)
 
     def edit_selected_cell(self) -> None:
-        if self._selected_row is None or self._selected_col is None:
-            show_warning(self.winfo_toplevel(), "Seleccion", "Haz clic en una celda.")
+        if self._selected_row is None:
+            show_warning(self.winfo_toplevel(), "Seleccion", "Haz clic en una fila.")
             return
-        self._edit_cell(self._selected_row, self._selected_col)
+        col = self._selected_col if self._selected_col is not None else 0
+        self._edit_cell(self._selected_row, col)
 
     def add_row(self) -> None:
         if self._df.empty:
@@ -336,10 +336,10 @@ class EditableDataGrid(ctk.CTkFrame):
         self._set_dirty(True)
 
     def delete_row(self) -> None:
-        if self._selected_row is None or self._selected_row == 0:
+        if self._selected_row is None:
             show_warning(self.winfo_toplevel(), "Seleccion", "Selecciona una fila de datos.")
             return
-        data_row = self._selected_row - 1
+        data_row = self._selected_row
         if not ask_confirm(self.winfo_toplevel(), "Eliminar fila", f"Eliminar fila {data_row + 1}?"):
             return
         self._df = self._df.drop(data_row).reset_index(drop=True)

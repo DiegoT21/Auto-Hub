@@ -5,16 +5,15 @@ from typing import Callable
 import customtkinter as ctk
 
 from app import theme
-from app.components import glass_card
 
 
 class WorkflowBar(ctk.CTkFrame):
-    """Barra de pasos glass — estilo bento."""
+    """Pasos en una sola fila, sin tarjetas grandes."""
 
     STEPS = (
-        (1, "Importar", "Traer facturas"),
-        (2, "Revisar", "Validar y editar"),
-        (3, "Carga Sage", "Enviar a Sage 50"),
+        (1, "1. Importar"),
+        (2, "2. Revisar"),
+        (3, "3. Sage"),
     )
 
     def __init__(
@@ -27,47 +26,35 @@ class WorkflowBar(ctk.CTkFrame):
         self._current = 1
         self._buttons: dict[int, ctk.CTkButton] = {}
 
-        shell = glass_card(self, radius=theme.BENTO_RADIUS)
-        shell.pack(fill="x")
-        inner = ctk.CTkFrame(shell, fg_color="transparent")
-        inner.pack(fill="x", padx=10, pady=10)
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x")
 
-        for num, title, subtitle in self.STEPS:
-            col = glass_card(inner, radius=theme.BENTO_RADIUS_SM)
-            col.pack(side="left", expand=True, fill="both", padx=5)
-
-            def make_cmd(n: int) -> Callable[[], None]:
-                return lambda: on_step(n)
-
+        for num, title in self.STEPS:
             b = ctk.CTkButton(
-                col,
-                text=f"{num}. {title}",
-                anchor="w",
-                height=42,
-                corner_radius=12,
+                row,
+                text=title,
+                width=110,
+                height=26,
+                corner_radius=8,
                 fg_color="transparent",
                 hover_color=theme.GLASS_BG_HOVER,
                 text_color=theme.TEXT_SECONDARY,
-                font=("Segoe UI", 13, "bold"),
-                command=make_cmd(num),
+                font=("Segoe UI", 11, "bold"),
+                border_width=1,
+                border_color=theme.GLASS_BORDER,
+                command=lambda n=num: on_step(n),
             )
-            b.pack(fill="x", padx=8, pady=(10, 0))
-            ctk.CTkLabel(
-                col,
-                text=subtitle,
-                font=theme.FONT_SMALL,
-                text_color=theme.TEXT_MUTED,
-            ).pack(anchor="w", padx=12, pady=(2, 10))
+            b.pack(side="left", padx=(0, 6))
             self._buttons[num] = b
 
         self.status_label = ctk.CTkLabel(
-            self,
-            text="Comienza importando facturas desde PsKloud, PDF o CSV.",
+            row,
+            text="",
             font=theme.FONT_SMALL,
-            text_color=theme.TEXT_SECONDARY,
+            text_color=theme.TEXT_MUTED,
             anchor="w",
         )
-        self.status_label.pack(fill="x", pady=(10, 0))
+        self.status_label.pack(side="left", fill="x", expand=True, padx=(8, 0))
 
     def set_step(self, step: int) -> None:
         self._current = step
@@ -77,12 +64,14 @@ class WorkflowBar(ctk.CTkFrame):
                     fg_color=theme.ACCENT,
                     text_color="white",
                     hover_color=theme.ACCENT_HOVER,
+                    border_color=theme.ACCENT,
                 )
             else:
                 button.configure(
                     fg_color="transparent",
                     text_color=theme.TEXT_SECONDARY,
                     hover_color=theme.GLASS_BG_HOVER,
+                    border_color=theme.GLASS_BORDER,
                 )
 
     def set_status(self, text: str) -> None:

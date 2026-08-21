@@ -9,7 +9,15 @@ from typing import Any
 import mysql.connector
 from mysql.connector import MySQLConnection
 
-ROOT = Path(__file__).resolve().parent.parent
+try:
+    import mysql.connector.locales.eng.client_error  # PyInstaller: mensajes de error MySQL
+    import mysql.connector.plugins.mysql_native_password
+except Exception:
+    pass
+
+from src.paths import app_root
+
+ROOT = app_root()
 DEFAULT_CONNECTIONS_PATH = ROOT / "config" / "connections.json"
 VIEW_SQL_PATH = ROOT / "scripts" / "create_autohub_view.sql"
 MYSQL_CONNECT_TIMEOUT = 8
@@ -120,6 +128,8 @@ def _connect_profile(profile: dict[str, Any], root: Path) -> Any:
         charset="utf8mb4",
         connection_timeout=MYSQL_CONNECT_TIMEOUT,
         autocommit=True,
+        use_pure=True,
+        auth_plugin="mysql_native_password",
     )
 
 

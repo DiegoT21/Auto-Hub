@@ -69,7 +69,7 @@
     }
   },
   "validation": {
-    "ruc_pattern": "^\\d{1,2}-\\d{3,4}-\\d{4,6}$",
+    "ruc_pattern": "^(?:(?:PE|PI|E|N|NT)-?)?\\d{1,12}-\\d{1,7}-\\d{1,10}$",
     "consumidor_final_values": [
       "CF",
       "CONSUMIDOR FINAL",

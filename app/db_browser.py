@@ -20,9 +20,11 @@ class DbBrowserPanel(ctk.CTkFrame):
         root,
         on_extract_selected: Callable[[list], None],
         on_back: Callable[[], None] | None = None,
+        get_config: Callable[[], dict] | None = None,
     ) -> None:
         super().__init__(parent, fg_color="transparent")
         self.config = config
+        self.get_config = get_config
         self.root = root
         self.on_extract_selected = on_extract_selected
         self.on_back = on_back
@@ -32,59 +34,46 @@ class DbBrowserPanel(ctk.CTkFrame):
         self._refresh_token = 0
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        ctk.CTkLabel(
-            header,
-            text="Facturas en PsKloud",
-            font=theme.FONT_HEADING,
-            text_color=theme.TEXT_PRIMARY,
-        ).pack(side="left")
-        if on_back:
-            btn(header, text="Volver", variant="ghost", width=90, command=on_back).pack(side="right")
+        filters = ctk.CTkFrame(self, fg_color="transparent")
+        filters.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        filters.grid_columnconfigure(3, weight=1)
 
-        filters = card(self)
-        filters.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        f_inner = ctk.CTkFrame(filters, fg_color="transparent")
-        f_inner.pack(fill="x", padx=16, pady=16)
-        f_inner.grid_columnconfigure(3, weight=1)
-
-        ctk.CTkLabel(f_inner, text="Desde:", font=theme.FONT_SMALL).grid(
-            row=0, column=0, padx=(0, 6), pady=4, sticky="w"
+        ctk.CTkLabel(filters, text="Desde", font=theme.FONT_SMALL).grid(
+            row=0, column=0, padx=(0, 4), sticky="w"
         )
-        self.date_entry = glass_input(f_inner, width=120, placeholder_text="2026-01-01")
-        self.date_entry.grid(row=0, column=1, padx=(0, 12), pady=4, sticky="w")
+        self.date_entry = glass_input(filters, width=100, placeholder_text="vacio = todas")
+        self.date_entry.grid(row=0, column=1, padx=(0, 8), sticky="w")
+        self.date_entry.insert("0", "2024-01-01")
 
-        ctk.CTkLabel(f_inner, text="Cliente / factura:", font=theme.FONT_SMALL).grid(
-            row=0, column=2, padx=(0, 6), pady=4, sticky="w"
+        ctk.CTkLabel(filters, text="Cliente / factura", font=theme.FONT_SMALL).grid(
+            row=0, column=2, padx=(0, 4), sticky="w"
         )
-        self.customer_entry = glass_input(f_inner, placeholder_text="nombre o numero...")
-        self.customer_entry.grid(row=0, column=3, padx=(0, 0), pady=4, sticky="ew")
+        self.customer_entry = glass_input(filters, placeholder_text="nombre o numero...")
+        self.customer_entry.grid(row=0, column=3, padx=(0, 8), sticky="ew")
 
-        btn_row = ctk.CTkFrame(f_inner, fg_color="transparent")
-        btn_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=(10, 0))
-        self.search_btn = btn(btn_row, text="Buscar", variant="secondary", command=self.refresh)
-        self.search_btn.pack(side="left", padx=(0, 8))
-        btn(btn_row, text="Seleccionar todo", variant="ghost", command=self.select_all).pack(side="left")
+        self.search_btn = btn(filters, text="Buscar", variant="primary", width=80, command=self.refresh)
+        self.search_btn.grid(row=0, column=4, padx=(0, 6))
+        btn(filters, text="Todo", variant="ghost", width=60, command=self.select_all).grid(row=0, column=5)
 
-        self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=12)
-        self.list_frame.grid(row=2, column=0, sticky="nsew")
+        self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=8)
+        self.list_frame.grid(row=1, column=0, sticky="nsew")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        actions.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         self.count_label = ctk.CTkLabel(
             actions,
-            text="Pulsa Buscar para cargar facturas (max 150 mas recientes).",
+            text="Pulsa Buscar (max 150).",
             font=theme.FONT_SMALL,
             text_color=theme.TEXT_SECONDARY,
         )
         self.count_label.pack(side="left")
         btn(
             actions,
-            text="Importar seleccionadas →",
+            text="Importar seleccionadas",
             variant="primary",
+            width=170,
             command=self._extract,
         ).pack(side="right")
 
@@ -111,6 +100,11 @@ class DbBrowserPanel(ctk.CTkFrame):
         token = self._refresh_token
         date_from = self.date_entry.get().strip() or None
         customer = self.customer_entry.get().strip() or None
+        if self.get_config:
+            try:
+                self.config = self.get_config()
+            except Exception:
+                pass
         config = self.config
         root = self.root
 
@@ -164,9 +158,9 @@ class DbBrowserPanel(ctk.CTkFrame):
         limit = int(self.config.get("extraction", {}).get("preview_limit", 150))
         for row in rows:
             item = card(self.list_frame)
-            item.pack(fill="x", pady=4, padx=4)
+            item.pack(fill="x", pady=1, padx=0)
             inner = ctk.CTkFrame(item, fg_color="transparent")
-            inner.pack(fill="x", padx=12, pady=10)
+            inner.pack(fill="x", padx=8, pady=4)
 
             var = ctk.StringVar(value="off")
             chk = ctk.CTkCheckBox(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -9,19 +10,19 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 import pandas as pd
-from CTkTable import CTkTable
 
-ROOT = Path(__file__).resolve().parent.parent
+from src.paths import app_root, is_frozen, seed_runtime_files
+
+ROOT = app_root()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app import theme
-from app.components import btn, card, glass_card, bento_tile, section_title, stat_chip
+from app.components import btn, card, glass_card, section_title, stat_chip
 from app.data_editor import EditableDataGrid
 from app.db_browser import DbBrowserPanel
 from app.db_connection_dialog import ConnectionBar, DatabaseConnectionDialog
 from app.dialogs import ask_confirm, show_error, show_info, show_warning
-from app.glass_bg import GlassBackground
 from app.menu_bar import AppMenuBar
 from app.preview_view import PreviewPanel
 from app.workflow_bar import WorkflowBar
@@ -41,19 +42,12 @@ from src.connections import (
 )
 from src.db import load_config
 from src.export_csv import export_csv, export_rejected
-from src.excel_automation import run_excel_automation
 from src.extract import extract_invoices, extract_invoices_by_ids, save_watermark
-from src.extract_pdf import extract_invoices_from_pdfs
-from src.sage_excel import (
-    copy_empty_workbook,
-    create_sage_template,
-    dataframe_to_invoice,
-    load_simulator_config,
-)
 from src.app_update import run_update, restart_autohub
 from src.sage_sdk_write import (
     TEST_COMPANY,
     TEST_CUSTOMER_ID,
+    authorize_sage_access,
     load_sika_test_rows,
     run_test_company_write,
 )
@@ -67,6 +61,13 @@ LOGO_PNG = ROOT / "assets" / "autohub_logo.png"
 LOGO_ICO = ROOT / "assets" / "autohub.ico"
 APP_ID = "Posper.AutoHub.1"
 CONFIG_PATH = Path(os.environ.get("AUTOHUB_CONFIG", ROOT / "config" / "config.json"))
+
+
+def _load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def _python_exe() -> Path:
@@ -88,6 +89,8 @@ def _set_windows_app_id() -> None:
 
 
 def _ensure_local_database() -> None:
+    if is_frozen():
+        return
     db = ROOT / "data" / "pskloud_demo.db"
     if db.exists():
         return
@@ -107,17 +110,14 @@ class AutoHubApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Auto-Hub")
-        self.geometry("1280x800")
-        self.minsize(1100, 720)
+        self.geometry("1000x640")
+        self.minsize(860, 520)
         self.configure(fg_color=theme.BG_DARK)
-
-        self._bg = GlassBackground(self)
-        self._bg.place_fill()
 
         self.config = load_config(CONFIG_PATH)
         self.connections_path = DEFAULT_CONNECTIONS_PATH
         self._sync_active_connection()
-        self.sim_config = load_simulator_config(ROOT)
+        self.sim_config = _load_json(ROOT / "config" / "sage_simulator.json")
         self.last_csv: Path | None = None
         self.last_excel: Path | None = None
         self.current_invoice: dict | None = None
@@ -134,6 +134,8 @@ class AutoHubApp(ctk.CTk):
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._recent_jobs: list[tuple[str, str, str]] = []
         self._logo_image: ctk.CTkImage | None = None
+        self._built_pages: set[str] = set()
+        self._log_buffer: list[str] = []
 
         self._apply_branding()
         self.grid_columnconfigure(1, weight=1)
@@ -151,24 +153,11 @@ class AutoHubApp(ctk.CTk):
                 self.iconbitmap(default=str(LOGO_ICO))
             except Exception:
                 pass
-        if LOGO_PNG.exists():
-            try:
-                import tkinter as tk
-                from PIL import Image
-
-                self._window_icon = tk.PhotoImage(file=str(LOGO_PNG))
-                self.iconphoto(True, self._window_icon)
-
-                pil_img = Image.open(LOGO_PNG)
-                self._logo_image = ctk.CTkImage(
-                    light_image=pil_img,
-                    dark_image=pil_img,
-                    size=(40, 40),
-                )
-            except Exception:
-                self._logo_image = None
+        self._logo_image = None
 
         def refresh_shortcut() -> None:
+            if is_frozen():
+                return
             try:
                 import subprocess
 
@@ -181,7 +170,8 @@ class AutoHubApp(ctk.CTk):
             except Exception:
                 pass
 
-        threading.Thread(target=refresh_shortcut, daemon=True).start()
+        if not is_frozen():
+            threading.Thread(target=refresh_shortcut, daemon=True).start()
 
     # ── Menu bar ────────────────────────────────────────────
 
@@ -210,6 +200,7 @@ class AutoHubApp(ctk.CTk):
         }
 
     def _menu_go_editor(self) -> None:
+        self._ensure_step(2)
         if self._pending_frame.empty and self.editor.dataframe.empty:
             show_warning(self, "Sin datos", "Importa facturas primero desde el menu Importar.")
             return
@@ -240,6 +231,8 @@ class AutoHubApp(ctk.CTk):
         )
 
     def _on_connection_changed(self, *, reload_invoices: bool = False) -> None:
+        self.config = load_config(CONFIG_PATH)
+        self._sync_active_connection()
         if hasattr(self, "connection_bar"):
             self.connection_bar.refresh()
         if hasattr(self, "db_browser"):
@@ -254,13 +247,21 @@ class AutoHubApp(ctk.CTk):
         self._update_workflow_status()
 
     def on_update_app(self) -> None:
-        if not ask_confirm(
-            self,
-            "Actualizar Auto-Hub",
-            "Va a bajar los cambios publicados y reiniciar la app.\n"
-            "No toca contraseñas ni app_id.txt.\n\n"
-            "Sage puede seguir abierto.",
-        ):
+        if is_frozen():
+            confirm = (
+                "Si hay AutoHub-update.zip en el Escritorio o junto al exe, "
+                "lo aplica y reinicia.\n"
+                "No toca contraseñas ni app_id.txt.\n"
+                "No hace falta GitHub en esta PC.\n\n"
+                "Sage puede seguir abierto."
+            )
+        else:
+            confirm = (
+                "Va a bajar los cambios publicados y reiniciar la app.\n"
+                "No toca contraseñas ni app_id.txt.\n\n"
+                "Sage puede seguir abierto."
+            )
+        if not ask_confirm(self, "Actualizar Auto-Hub", confirm):
             return
         self._add_job("Actualizar app", "running")
         self._log("Actualizando Auto-Hub...")
@@ -307,27 +308,27 @@ class AutoHubApp(ctk.CTk):
         sidebar.configure(fg_color=theme.BG_SIDEBAR, border_width=0)
         sidebar.grid(row=1, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
-        sidebar.configure(width=228)
+        sidebar.configure(width=168)
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=16, pady=(24, 20))
+        brand.pack(fill="x", padx=10, pady=(10, 8))
         if self._logo_image is not None:
             ctk.CTkLabel(brand, text="", image=self._logo_image).pack(side="left")
         else:
-            logo = ctk.CTkFrame(brand, width=40, height=40, fg_color=theme.ACCENT, corner_radius=10)
+            logo = ctk.CTkFrame(brand, width=28, height=28, fg_color=theme.ACCENT, corner_radius=6)
             logo.pack(side="left")
             logo.pack_propagate(False)
-            ctk.CTkLabel(logo, text="AH", font=("Segoe UI", 16, "bold"), text_color="white").place(
+            ctk.CTkLabel(logo, text="AH", font=("Segoe UI", 11, "bold"), text_color="white").place(
                 relx=0.5, rely=0.5, anchor="center"
             )
         ctk.CTkLabel(brand, text="Auto-Hub", font=theme.FONT_LOGO, text_color=theme.TEXT_PRIMARY).pack(
-            side="left", padx=(10, 0)
+            side="left", padx=(8, 0)
         )
 
         nav_items = [
             ("step1", "1. Importar"),
             ("step2", "2. Revisar"),
-            ("step3", "3. Carga Sage"),
+            ("step3", "3. Sage"),
         ]
         for key, label in nav_items:
             step_num = int(key[-1])
@@ -335,7 +336,7 @@ class AutoHubApp(ctk.CTk):
                 sidebar,
                 text=f"  {label}",
                 anchor="w",
-                height=44,
+                height=28,
                 corner_radius=theme.BENTO_RADIUS_SM,
                 fg_color="transparent",
                 hover_color=theme.GLASS_BG_HOVER,
@@ -343,72 +344,52 @@ class AutoHubApp(ctk.CTk):
                 font=theme.FONT_BODY,
                 command=lambda n=step_num: self._go_step(n),
             )
-            nav_btn.pack(fill="x", padx=12, pady=2)
+            nav_btn.pack(fill="x", padx=8, pady=1)
             self._nav_buttons[key] = nav_btn
 
         ctk.CTkButton(
             sidebar,
             text="  Actividad / Log",
             anchor="w",
-            height=44,
+            height=28,
             corner_radius=theme.BENTO_RADIUS_SM,
             fg_color="transparent",
             hover_color=theme.GLASS_BG_HOVER,
             text_color=theme.TEXT_MUTED,
             font=theme.FONT_BODY,
             command=lambda: self._show_activity(True),
-        ).pack(fill="x", padx=12, pady=(12, 2))
+        ).pack(fill="x", padx=8, pady=(8, 1))
 
         ctk.CTkButton(
             sidebar,
             text="  Actualizar app",
             anchor="w",
-            height=44,
+            height=28,
             corner_radius=theme.BENTO_RADIUS_SM,
             fg_color="transparent",
             hover_color=theme.GLASS_BG_HOVER,
             text_color=theme.TEXT_SECONDARY,
             font=theme.FONT_BODY,
             command=self.on_update_app,
-        ).pack(fill="x", padx=12, pady=(8, 2))
+        ).pack(fill="x", padx=8, pady=1)
 
         ctk.CTkLabel(sidebar, text="Support", text_color=theme.TEXT_MUTED, font=theme.FONT_SMALL).pack(
-            side="bottom", anchor="w", padx=20, pady=(0, 20)
+            side="bottom", anchor="w", padx=10, pady=(0, 8)
         )
 
     def _build_main(self) -> None:
         self.main = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
         self.main.grid(row=1, column=1, sticky="nsew")
         self.main.grid_columnconfigure(0, weight=1)
-        self.main.grid_rowconfigure(2, weight=1)
-
-        top = ctk.CTkFrame(self.main, fg_color="transparent", height=56)
-        top.grid(row=0, column=0, sticky="ew", padx=24, pady=(16, 0))
-        ctk.CTkLabel(top, text="Auto-Hub", font=theme.FONT_HEADING, text_color=theme.TEXT_PRIMARY).pack(
-            side="left"
-        )
-
-        self.status_badge = ctk.CTkLabel(
-            top,
-            text="● Online",
-            font=theme.FONT_SMALL,
-            text_color=theme.SUCCESS,
-            fg_color=theme.GLASS_BG,
-            corner_radius=20,
-            border_width=1,
-            border_color=theme.GLASS_BORDER,
-            padx=12,
-            pady=4,
-        )
-        self.status_badge.pack(side="right")
+        self.main.grid_rowconfigure(1, weight=1)
 
         wf_wrap = ctk.CTkFrame(self.main, fg_color="transparent")
-        wf_wrap.grid(row=1, column=0, sticky="ew", padx=24, pady=(8, 0))
+        wf_wrap.grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
         self.workflow_bar = WorkflowBar(wf_wrap, on_step=self._go_step)
         self.workflow_bar.pack(fill="x")
 
         self.pages = ctk.CTkFrame(self.main, fg_color="transparent")
-        self.pages.grid(row=2, column=0, sticky="nsew", padx=16, pady=16)
+        self.pages.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
         self.pages.grid_columnconfigure(0, weight=1)
         self.pages.grid_rowconfigure(0, weight=1)
 
@@ -417,24 +398,33 @@ class AutoHubApp(ctk.CTk):
             frame = ctk.CTkFrame(self.pages, fg_color="transparent")
             self.page_frames[name] = frame
 
-        self._build_step1()
-        self._build_step2()
-        self._build_step3()
-        self._build_activity()
+        self._ensure_step(1)
         self.menu_bar.bind_shortcuts(self)
+
+    def _ensure_step(self, step: int) -> None:
+        key = f"step{step}"
+        if key in self._built_pages:
+            return
+        {1: self._build_step1, 2: self._build_step2, 3: self._build_step3}[step]()
+        self._built_pages.add(key)
+
+    def _ensure_activity(self) -> None:
+        if "activity" in self._built_pages:
+            return
+        self._build_activity()
+        self._built_pages.add("activity")
 
     def _show_activity(self, show: bool) -> None:
         if show:
+            self._ensure_activity()
             for key, frame in self.page_frames.items():
                 frame.grid_forget()
             self.page_frames["activity"].grid(row=0, column=0, sticky="nsew")
 
     def _go_step(self, step: int) -> None:
+        self._ensure_step(step)
         self._current_step = step
-        self._show_activity(False)
         for key, frame in self.page_frames.items():
-            if key == "activity":
-                continue
             frame.grid_forget()
         self.page_frames[f"step{step}"].grid(row=0, column=0, sticky="nsew")
         for key, nav_btn in self._nav_buttons.items():
@@ -456,109 +446,64 @@ class AutoHubApp(ctk.CTk):
         self._update_workflow_status()
 
     def _update_workflow_status(self) -> None:
-        has_data = not self.editor.dataframe.empty
+        editor = getattr(self, "editor", None)
+        has_data = editor is not None and not editor.dataframe.empty
         if not has_data and self._pending_frame.empty:
             self.workflow_bar.set_status("Paso 1 — Elige PsKloud, PDF o CSV y trae tus facturas.")
             return
         if self._current_step == 1:
             self.workflow_bar.set_status("Facturas importadas. Ve al paso 2 para revisar.")
         elif self._current_step == 2:
-            inv = self.editor.selected_invoice
-            lines = len(self.editor.dataframe) if has_data else len(self._pending_frame)
+            inv = editor.selected_invoice if editor is not None else None
+            lines = len(editor.dataframe) if has_data else len(self._pending_frame)
             inv_txt = f" · Factura: {inv}" if inv else ""
             if self._step2_mode == "preview":
                 self.workflow_bar.set_status(f"Paso 2 — Revisa validacion ({lines} lineas).{inv_txt}")
             else:
                 self.workflow_bar.set_status(f"Paso 2 — Edita datos y elige factura ({lines} lineas).{inv_txt}")
         else:
-            inv = self.editor.selected_invoice or "—"
-            self.workflow_bar.set_status(f"Paso 3 — Factura {inv}. Abre plantilla Sage y pulsa START.")
+            inv = editor.selected_invoice if editor is not None else None
+            self.workflow_bar.set_status(f"Paso 3 — Factura {inv or '—'}. Abre plantilla Sage y pulsa START.")
 
     # ── Paso 1: Importar ────────────────────────────────────
 
     def _build_step1(self) -> None:
         page = self.page_frames["step1"]
-        page.grid_columnconfigure(0, weight=3)
-        page.grid_columnconfigure(1, weight=1)
+        page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(1, weight=1)
-        page.grid_rowconfigure(2, weight=1)
-        page.grid_rowconfigure(3, weight=1)
 
-        section_title(
-            page,
-            "Importar facturas",
-            "Elige la fuente. Al importar avanzas automaticamente al paso 2.",
-        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, theme.BENTO_GAP))
-
-        pskloud_shell = glass_card(page, glow=True)
-        pskloud_shell.grid(row=1, column=0, rowspan=3, sticky="nsew", padx=(0, theme.BENTO_GAP // 2), pady=0)
-        pskloud_shell.grid_columnconfigure(0, weight=1)
-        pskloud_shell.grid_rowconfigure(1, weight=1)
-
-        ph = ctk.CTkFrame(pskloud_shell, fg_color="transparent")
-        ph.grid(row=0, column=0, sticky="ew", padx=theme.BENTO_PAD, pady=(theme.BENTO_PAD, 8))
-        ph.grid_columnconfigure(1, weight=1)
-
-        title_left = ctk.CTkFrame(ph, fg_color="transparent")
-        title_left.grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(title_left, text="🗄", font=("Segoe UI", 22)).pack(side="left", padx=(0, 10))
-        ctk.CTkLabel(
-            title_left,
-            text="PsKloud — Base de datos",
-            font=theme.FONT_HEADING,
-            text_color=theme.TEXT_PRIMARY,
-        ).pack(side="left")
-
+        tools = ctk.CTkFrame(page, fg_color="transparent")
+        tools.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        btn(
+            tools,
+            text="Prueba Sika",
+            variant="primary",
+            width=110,
+            command=self.on_load_sika_sdk_test,
+        ).pack(side="left", padx=(0, 6))
+        btn(tools, text="PDF", variant="secondary", width=70, command=self.on_extract_pdf).pack(
+            side="left", padx=(0, 6)
+        )
+        btn(tools, text="CSV", variant="secondary", width=70, command=self.on_open_csv).pack(
+            side="left", padx=(0, 12)
+        )
         self.connection_bar = ConnectionBar(
-            ph,
+            tools,
             root=ROOT,
             config_path=CONFIG_PATH,
             connections_path=self.connections_path,
             on_changed=self._on_connection_changed,
         )
-        self.connection_bar.grid(row=0, column=1, sticky="e")
+        self.connection_bar.pack(side="right")
 
-        db_wrap = ctk.CTkFrame(pskloud_shell, fg_color="transparent")
-        db_wrap.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        db_wrap.grid_columnconfigure(0, weight=1)
-        db_wrap.grid_rowconfigure(0, weight=1)
         self.db_browser = DbBrowserPanel(
-            db_wrap,
+            page,
             self.config,
             ROOT,
             on_extract_selected=self._extract_db_selected,
+            get_config=lambda: load_config(CONFIG_PATH),
         )
-        self.db_browser.grid(row=0, column=0, sticky="nsew")
-
-        pdf_tile = bento_tile(
-            page,
-            icon="📑",
-            title="Facturas PDF",
-            subtitle="Selecciona archivos PDF para leer e importar.",
-            command=self.on_extract_pdf,
-            compact=True,
-        )
-        pdf_tile.grid(row=1, column=1, sticky="nsew", padx=(theme.BENTO_GAP // 2, 0), pady=(0, theme.BENTO_GAP // 2))
-
-        csv_tile = bento_tile(
-            page,
-            icon="📄",
-            title="Archivo CSV",
-            subtitle="Importa un CSV con columnas de factura.",
-            command=self.on_open_csv,
-            compact=True,
-        )
-        csv_tile.grid(row=2, column=1, sticky="nsew", padx=(theme.BENTO_GAP // 2, 0), pady=theme.BENTO_GAP // 2)
-
-        sdk_tile = bento_tile(
-            page,
-            icon="🧪",
-            title="Prueba SDK — 3 lineas Sika",
-            subtitle="Carga *0000001 (Miguel del Rio) y enviala a la empresa de prueba.",
-            command=self.on_load_sika_sdk_test,
-            compact=True,
-        )
-        sdk_tile.grid(row=3, column=1, sticky="nsew", padx=(theme.BENTO_GAP // 2, 0))
+        self.db_browser.grid(row=1, column=0, sticky="nsew")
 
     # ── Paso 2: Revisar ─────────────────────────────────────
 
@@ -701,15 +646,24 @@ class AutoHubApp(ctk.CTk):
             command=self.on_send_sage_sdk_test,
         )
         self.sdk_btn.pack(side="left", padx=(8, 0))
+        self.auth_btn = btn(
+            prep_row,
+            text="Autorizar Sage",
+            variant="ghost",
+            width=130,
+            height=theme.BTN_HEIGHT_LG,
+            command=self.on_authorize_sage,
+        )
+        self.auth_btn.pack(side="left", padx=(8, 0))
 
         hint = glass_card(inner, radius=theme.BENTO_RADIUS_SM)
         hint.pack(fill="x")
         ctk.CTkLabel(
             hint,
             text=(
-                "SDK prueba: escribe en LYL CONST CIA de PRUEBA\n"
-                "(cliente C SUAREZ TORRE 1, fecha de hoy, prefijo AH).\n"
-                "Debe correrse en la PC donde esta Sage 50."
+                "1) Abre Sage en LYL CONST CIA de PRUEBA\n"
+                "2) Autorizar Sage → Always Allow (una sola vez)\n"
+                "3) SDK prueba escribe factura (prefijo AH). No hace falta cerrar/abrir Sage."
             ),
             font=theme.FONT_SMALL,
             text_color=theme.TEXT_SECONDARY,
@@ -756,6 +710,9 @@ class AutoHubApp(ctk.CTk):
             border_color=theme.GLASS_BORDER,
         )
         self.log_text.pack(fill="both", expand=True)
+        if self._log_buffer:
+            self.log_text.insert("end", "".join(self._log_buffer))
+            self.log_text.see("end")
 
     # ── Helpers ─────────────────────────────────────────────
 
@@ -783,13 +740,20 @@ class AutoHubApp(ctk.CTk):
     def _log(self, msg: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         line = f"[{ts}] {msg}\n"
-        self.log_text.insert("end", line)
-        self.log_text.see("end")
+        self._log_buffer.append(line)
+        if len(self._log_buffer) > 300:
+            self._log_buffer = self._log_buffer[-300:]
+        if hasattr(self, "log_text"):
+            self.log_text.insert("end", line)
+            self.log_text.see("end")
         if hasattr(self, "excel_log"):
             self.excel_log.insert("end", line)
             self.excel_log.see("end")
 
     def _set_excel_status(self) -> None:
+        if not hasattr(self, "excel_status"):
+            self._update_workflow_status()
+            return
         has_data = self.current_invoice is not None
         has_excel = self.last_excel is not None and self.excel_open
         inv = self.editor.selected_invoice if hasattr(self, "editor") else None
@@ -827,6 +791,8 @@ class AutoHubApp(ctk.CTk):
             self._set_excel_status()
             return
         try:
+            from src.sage_excel import dataframe_to_invoice
+
             inv = self.editor.selected_invoice
             subset = frame
             if inv and "Invoice Number" in frame.columns:
@@ -855,6 +821,8 @@ class AutoHubApp(ctk.CTk):
         if inv and "Invoice Number" in frame.columns:
             subset = frame[frame["Invoice Number"].astype(str) == str(inv)]
         try:
+            from src.sage_excel import dataframe_to_invoice
+
             self.current_invoice = dataframe_to_invoice(subset, self.sim_config, invoice_number=inv)
         except Exception as exc:
             self.current_invoice = None
@@ -877,6 +845,7 @@ class AutoHubApp(ctk.CTk):
         self.rejected_rows = rejected_rows
         self._import_warnings = warnings or []
         self._pdf_meta = pdf_meta or {}
+        self._ensure_step(2)
         self.preview_panel.show_data(source, frame, valid_rows, rejected_rows, warnings, pdf_meta)
         self._show_step2_mode("preview")
         self._go_step(2)
@@ -951,8 +920,8 @@ class AutoHubApp(ctk.CTk):
             self._add_job("Cargada prueba Sika *0000001", "ok")
             self._log("Cargadas 3 lineas Sika (*0000001). Paso 3 → SDK prueba.")
         except Exception as exc:
-            show_error(self, "Prueba SDK", str(exc))
-            self._log(f"ERROR prueba Sika: {exc}")
+            show_error(self, "Prueba SDK", "No se pudo cargar la prueba Sika:\n" + str(exc))
+            self._log(f"ERROR prueba Sika: {type(exc).__name__}: {exc}")
 
     def on_send_sage_sdk_test(self) -> None:
         rows = self.valid_rows or []
@@ -971,8 +940,9 @@ class AutoHubApp(ctk.CTk):
             + TEST_CUSTOMER_ID
             + "\nLineas: "
             + str(len(rows))
-            + "\n\nNO toca LYL CONSTRUCTIONS SUPPLY INC 2025.\n"
-            "Sage 50 debe estar en esta PC (Always Allow si lo pide).",
+            + "\n\nNO toca LYL CONSTRUCTIONS SUPPLY INC 2025.\n\n"
+            "Si Sage pide permiso: deja la empresa de prueba ABIERTA\n"
+            "y elige ALWAYS ALLOW (una vez). Luego ya no lo pedira.",
         ):
             return
 
@@ -981,6 +951,8 @@ class AutoHubApp(ctk.CTk):
         self._log("SDK prueba — compilando y enviando...")
         if hasattr(self, "sdk_btn"):
             self.sdk_btn.configure(state="disabled")
+        if hasattr(self, "auth_btn"):
+            self.auth_btn.configure(state="disabled")
 
         def worker() -> None:
             try:
@@ -995,15 +967,53 @@ class AutoHubApp(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def on_authorize_sage(self) -> None:
+        if not ask_confirm(
+            self,
+            "Autorizar Sage",
+            "1. Abre Sage 50\n"
+            "2. Entra a LYL CONST CIA de PRUEBA\n"
+            "3. Pulsa OK aqui y, cuando salga el dialogo, elige ALWAYS ALLOW\n\n"
+            "Con Always Allow no tendras que cerrar/abrir Sage en cada carga.",
+        ):
+            return
+
+        self._go_step(3)
+        self._add_job("Autorizar Sage", "running")
+        self._log("Autorizar Sage — esperando Always Allow...")
+        if hasattr(self, "sdk_btn"):
+            self.sdk_btn.configure(state="disabled")
+        if hasattr(self, "auth_btn"):
+            self.auth_btn.configure(state="disabled")
+
+        def worker() -> None:
+            try:
+                authorize_sage_access(
+                    ROOT,
+                    on_log=lambda msg: self.after(0, self._log, msg),
+                )
+                self.after(
+                    0,
+                    self._on_sdk_done,
+                    True,
+                    "OK — acceso Granted. Ya puedes usar SDK prueba sin cerrar/abrir Sage.",
+                )
+            except Exception as exc:
+                self.after(0, self._on_sdk_done, False, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _on_sdk_done(self, ok: bool, message: str) -> None:
         if hasattr(self, "sdk_btn"):
             self.sdk_btn.configure(state="normal")
+        if hasattr(self, "auth_btn"):
+            self.auth_btn.configure(state="normal")
         self._log(message)
         if ok:
-            self._add_job("SDK prueba OK", "ok")
+            self._add_job("Sage SDK OK", "ok")
             show_info(self, "Sage SDK", message)
         else:
-            self._add_job("SDK prueba fallo", "error")
+            self._add_job("Sage SDK fallo", "error")
             show_error(self, "Sage SDK", message)
 
     def on_extract_pdf(self) -> None:
@@ -1016,6 +1026,8 @@ class AutoHubApp(ctk.CTk):
         if not paths:
             return
         try:
+            from src.extract_pdf import extract_invoices_from_pdfs
+
             self._add_job("Extraccion PDF", "running")
             raw, warnings, pdf_meta = extract_invoices_from_pdfs([Path(p) for p in paths], ROOT)
             self._process_raw_import(raw, "PDF", warnings, pdf_meta)
@@ -1075,6 +1087,8 @@ class AutoHubApp(ctk.CTk):
         self._ensure_template()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output = ROOT / self.sim_config["paths"]["output_dir"] / f"sage_live_{timestamp}.xlsx"
+        from src.sage_excel import copy_empty_workbook
+
         self.last_excel = copy_empty_workbook(ROOT, self.sim_config, output)
         self._log(f"Abriendo Excel: {self.last_excel.name}")
         os.startfile(str(self.last_excel))
@@ -1113,6 +1127,8 @@ class AutoHubApp(ctk.CTk):
 
         def worker() -> None:
             try:
+                from src.excel_automation import run_excel_automation
+
                 run_excel_automation(
                     self.last_excel,
                     invoice,
@@ -1156,6 +1172,8 @@ class AutoHubApp(ctk.CTk):
     def _ensure_template(self) -> None:
         template = ROOT / self.sim_config["paths"]["template"]
         if not template.exists():
+            from src.sage_excel import create_sage_template
+
             create_sage_template(ROOT, self.sim_config)
 
     def on_reset(self) -> None:
@@ -1167,7 +1185,8 @@ class AutoHubApp(ctk.CTk):
         state = ROOT / self.config["extraction"]["watermark_file"]
         if state.exists():
             state.unlink()
-        self.editor.load_dataframe(pd.DataFrame())
+        if hasattr(self, "editor"):
+            self.editor.load_dataframe(pd.DataFrame())
         self.current_invoice = None
         self.excel_open = False
         self.last_excel = None
@@ -1176,6 +1195,7 @@ class AutoHubApp(ctk.CTk):
 
 
 def main() -> None:
+    seed_runtime_files()
     _set_windows_app_id()
     _ensure_local_database()
     app = AutoHubApp()

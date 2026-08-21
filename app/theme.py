@@ -47,26 +47,26 @@ BTN_DANGER_BG = "#FFF1F2"
 BTN_DANGER_HOVER = "#FFE4E6"
 BTN_DANGER_BORDER = "#FDA4AF"
 BTN_DANGER_TEXT = "#BE123C"
-BTN_HEIGHT = 38
-BTN_HEIGHT_SM = 34
-BTN_HEIGHT_LG = 46
-BTN_RADIUS = 14
-BTN_FONT = ("Segoe UI", 12)
-BTN_FONT_SM = ("Segoe UI", 11)
+BTN_HEIGHT = 28
+BTN_HEIGHT_SM = 26
+BTN_HEIGHT_LG = 32
+BTN_RADIUS = 8
+BTN_FONT = ("Segoe UI", 11)
+BTN_FONT_SM = ("Segoe UI", 10)
 
 # Bento / glass geometry
-BENTO_RADIUS = 22
-BENTO_RADIUS_SM = 16
-BENTO_GAP = 12
-BENTO_PAD = 20
+BENTO_RADIUS = 10
+BENTO_RADIUS_SM = 8
+BENTO_GAP = 6
+BENTO_PAD = 8
 
-FONT_TITLE = ("Segoe UI", 28, "bold")
-FONT_HEADING = ("Segoe UI", 18, "bold")
-FONT_SUBTITLE = ("Segoe UI", 13)
-FONT_BODY = ("Segoe UI", 12)
-FONT_SMALL = ("Segoe UI", 11)
-FONT_MONO = ("Cascadia Mono", 11)
-FONT_LOGO = ("Segoe UI", 20, "bold")
+FONT_TITLE = ("Segoe UI", 15, "bold")
+FONT_HEADING = ("Segoe UI", 13, "bold")
+FONT_SUBTITLE = ("Segoe UI", 11)
+FONT_BODY = ("Segoe UI", 11)
+FONT_SMALL = ("Segoe UI", 10)
+FONT_MONO = ("Cascadia Mono", 10)
+FONT_LOGO = ("Segoe UI", 14, "bold")
 
 TABLE_HEADER = ("#E7EEF8", "#E7EEF8")
 TABLE_ROW_EVEN = ("#FFFFFF", "#FFFFFF")

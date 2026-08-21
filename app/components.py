@@ -32,7 +32,7 @@ def glass_input(parent, **kwargs) -> ctk.CTkEntry:
         corner_radius=theme.BENTO_RADIUS_SM,
         text_color=theme.TEXT_PRIMARY,
         placeholder_text_color=theme.TEXT_MUTED,
-        height=36,
+        height=28,
         font=theme.FONT_BODY,
     )
     defaults.update(kwargs)
