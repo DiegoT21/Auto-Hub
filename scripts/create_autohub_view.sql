@@ -25,13 +25,25 @@ SELECT
         WHEN d.timpueprc >= 1 THEN d.timpueprc / 100
         ELSE d.timpueprc
     END AS tasa_itbms,
-    d.montoneto AS total_linea
+    d.montoneto AS total_linea,
+    TRIM(d.almacen) AS sucursal_codigo,
+    TRIM(COALESCE(a.nombre, '')) AS sucursal_nombre,
+    CASE TRIM(d.almacen)
+        WHEN '01' THEN 'ADI SUPPLY'
+        WHEN '02' THEN 'CORONADO'
+        WHEN '03' THEN 'RIO ABAJO'
+        ELSE TRIM(COALESCE(NULLIF(TRIM(a.nombre), ''), 'SIN SUCURSAL'))
+    END AS sucursal
 FROM operti h
 JOIN opermv d
   ON h.id_empresa = d.id_empresa
  AND h.agencia = d.agencia
  AND h.tipodoc = d.tipodoc
  AND h.documento = d.documento
+LEFT JOIN almacene a
+  ON a.id_empresa = d.id_empresa
+ AND a.agencia = d.agencia
+ AND TRIM(a.codigo) = TRIM(d.almacen)
 WHERE h.tipodoc = 'FAC'
   AND h.totalfinal > 0
   AND TRIM(h.estatusdoc) IN ('0', '2')

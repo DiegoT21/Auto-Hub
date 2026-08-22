@@ -8,6 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
 
+if not getattr(sys, "frozen", False):
+    _BOOTSTRAP = Path(__file__).resolve().parent.parent
+    if str(_BOOTSTRAP) not in sys.path:
+        sys.path.insert(0, str(_BOOTSTRAP))
+
 import customtkinter as ctk
 import pandas as pd
 
@@ -47,6 +52,7 @@ from src.app_update import run_update, restart_autohub
 from src.sage_sdk_write import (
     TEST_COMPANY,
     TEST_CUSTOMER_ID,
+    DuplicateSageInvoice,
     authorize_sage_access,
     load_sika_test_rows,
     run_test_company_write,
@@ -119,9 +125,7 @@ class AutoHubApp(ctk.CTk):
         self._sync_active_connection()
         self.sim_config = _load_json(ROOT / "config" / "sage_simulator.json")
         self.last_csv: Path | None = None
-        self.last_excel: Path | None = None
         self.current_invoice: dict | None = None
-        self.excel_open = False
         self.valid_rows: list[dict] = []
         self.rejected_rows: list[dict] = []
         self._dirty = False
@@ -194,7 +198,6 @@ class AutoHubApp(ctk.CTk):
             "view_step3": lambda: self._go_step(3),
             "view_activity": lambda: self._show_activity(True),
             "reset_db": self.on_reset,
-            "open_excel_template": self.on_prepare_excel,
             "db_connections": self.on_db_connections,
             "update_app": self.on_update_app,
         }
@@ -463,7 +466,7 @@ class AutoHubApp(ctk.CTk):
                 self.workflow_bar.set_status(f"Paso 2 — Edita datos y elige factura ({lines} lineas).{inv_txt}")
         else:
             inv = editor.selected_invoice if editor is not None else None
-            self.workflow_bar.set_status(f"Paso 3 — Factura {inv or '—'}. Abre plantilla Sage y pulsa START.")
+            self.workflow_bar.set_status(f"Paso 3 — Factura {inv or '—'}. Conecta Sage y envia la factura.")
 
     # ── Paso 1: Importar ────────────────────────────────────
 
@@ -476,7 +479,7 @@ class AutoHubApp(ctk.CTk):
         tools.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         btn(
             tools,
-            text="Prueba Sika",
+            text="Factura Sika",
             variant="primary",
             width=110,
             command=self.on_load_sika_sdk_test,
@@ -579,20 +582,18 @@ class AutoHubApp(ctk.CTk):
         section_title(
             page,
             "Carga en Sage 50",
-            "Excel (START) o SDK real en la empresa de PRUEBA.",
+            "Conecta Sage y envia la factura seleccionada.",
         ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, theme.BENTO_GAP))
 
         stats = ctk.CTkFrame(page, fg_color="transparent")
         stats.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, theme.BENTO_GAP))
-        for i in range(3):
-            stats.grid_columnconfigure(i, weight=1)
+        stats.grid_columnconfigure(0, weight=1)
+        stats.grid_columnconfigure(1, weight=1)
 
         self._stat_data = stat_chip(stats, "Datos", "Sin cargar", color=theme.TEXT_MUTED)
         self._stat_data.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self._stat_excel = stat_chip(stats, "Plantilla", "No abierta", color=theme.TEXT_MUTED)
-        self._stat_excel.grid(row=0, column=1, sticky="nsew", padx=6)
         self._stat_invoice = stat_chip(stats, "Factura", "—", color=theme.CYAN)
-        self._stat_invoice.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        self._stat_invoice.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         actions = glass_card(page, glow=True)
         actions.grid(row=2, column=0, sticky="nsew", padx=(0, theme.BENTO_GAP // 2), pady=0)
@@ -601,21 +602,13 @@ class AutoHubApp(ctk.CTk):
         inner = ctk.CTkFrame(actions, fg_color="transparent")
         inner.pack(fill="both", expand=True, padx=theme.BENTO_PAD, pady=theme.BENTO_PAD)
 
-        self.excel_status = ctk.CTkLabel(
+        self.sage_status = ctk.CTkLabel(
             inner,
-            text="Listo para automatizar",
+            text="Listo para enviar a Sage",
             font=theme.FONT_HEADING,
             text_color=theme.TEXT_PRIMARY,
         )
-        self.excel_status.pack(anchor="w", pady=(0, 4))
-
-        self.excel_path_label = ctk.CTkLabel(
-            inner,
-            text="Plantilla: (no abierta)",
-            font=theme.FONT_SMALL,
-            text_color=theme.TEXT_MUTED,
-        )
-        self.excel_path_label.pack(anchor="w", pady=(0, 16))
+        self.sage_status.pack(anchor="w", pady=(0, 16))
 
         prep_row = ctk.CTkFrame(inner, fg_color="transparent")
         prep_row.pack(fill="x", pady=(0, 12))
@@ -623,47 +616,34 @@ class AutoHubApp(ctk.CTk):
         btn(prep_row, text="← Editar", variant="ghost", command=lambda: self._go_step(2)).pack(
             side="left", padx=(0, 8)
         )
-        btn(prep_row, text="Abrir plantilla", variant="secondary", command=self.on_prepare_excel).pack(
-            side="left", padx=(0, 8)
-        )
-        self.start_btn = btn(
-            prep_row,
-            text="▶ START",
-            variant="primary",
-            width=140,
-            height=theme.BTN_HEIGHT_LG,
-            font=("Segoe UI", 14, "bold"),
-            command=self.on_start_automation,
-        )
-        self.start_btn.pack(side="left", padx=(8, 0))
-
-        self.sdk_btn = btn(
-            prep_row,
-            text="SDK prueba",
-            variant="secondary",
-            width=140,
-            height=theme.BTN_HEIGHT_LG,
-            command=self.on_send_sage_sdk_test,
-        )
-        self.sdk_btn.pack(side="left", padx=(8, 0))
         self.auth_btn = btn(
             prep_row,
-            text="Autorizar Sage",
-            variant="ghost",
+            text="Conectar Sage",
+            variant="secondary",
             width=130,
             height=theme.BTN_HEIGHT_LG,
             command=self.on_authorize_sage,
         )
-        self.auth_btn.pack(side="left", padx=(8, 0))
+        self.auth_btn.pack(side="left", padx=(0, 8))
+        self.sdk_btn = btn(
+            prep_row,
+            text="Enviar a Sage",
+            variant="primary",
+            width=150,
+            height=theme.BTN_HEIGHT_LG,
+            font=("Segoe UI", 14, "bold"),
+            command=self.on_send_sage_sdk_test,
+        )
+        self.sdk_btn.pack(side="left")
 
         hint = glass_card(inner, radius=theme.BENTO_RADIUS_SM)
         hint.pack(fill="x")
         ctk.CTkLabel(
             hint,
             text=(
-                "1) Abre Sage en LYL CONST CIA de PRUEBA\n"
-                "2) Autorizar Sage → Always Allow (una sola vez)\n"
-                "3) SDK prueba escribe factura (prefijo AH). No hace falta cerrar/abrir Sage."
+                "1) Abre Sage en LYL CONSTRUCTIONS SUPPLY INC 2025-2026\n"
+                "2) Conectar Sage → Always Allow (una sola vez)\n"
+                "3) Enviar a Sage carga la factura. No hace falta cerrar/abrir Sage."
             ),
             font=theme.FONT_SMALL,
             text_color=theme.TEXT_SECONDARY,
@@ -676,18 +656,18 @@ class AutoHubApp(ctk.CTk):
         log_shell.grid_rowconfigure(1, weight=1)
         ctk.CTkLabel(
             log_shell,
-            text="Log de automatizacion",
+            text="Log de Sage",
             font=theme.FONT_HEADING,
             text_color=theme.TEXT_PRIMARY,
         ).grid(row=0, column=0, sticky="w", padx=theme.BENTO_PAD, pady=(theme.BENTO_PAD, 8))
-        self.excel_log = ctk.CTkTextbox(
+        self.sage_log = ctk.CTkTextbox(
             log_shell,
             font=theme.FONT_MONO,
             corner_radius=theme.BENTO_RADIUS_SM,
             fg_color=theme.GLASS_INPUT,
             border_color=theme.GLASS_BORDER,
         )
-        self.excel_log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.sage_log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
 
     # ── Activity (log) ──────────────────────────────────────
 
@@ -746,35 +726,26 @@ class AutoHubApp(ctk.CTk):
         if hasattr(self, "log_text"):
             self.log_text.insert("end", line)
             self.log_text.see("end")
-        if hasattr(self, "excel_log"):
-            self.excel_log.insert("end", line)
-            self.excel_log.see("end")
+        if hasattr(self, "sage_log"):
+            self.sage_log.insert("end", line)
+            self.sage_log.see("end")
 
-    def _set_excel_status(self) -> None:
-        if not hasattr(self, "excel_status"):
+    def _set_sage_status(self) -> None:
+        if not hasattr(self, "sage_status"):
             self._update_workflow_status()
             return
         has_data = self.current_invoice is not None
-        has_excel = self.last_excel is not None and self.excel_open
         inv = self.editor.selected_invoice if hasattr(self, "editor") else None
 
         if has_data:
-            self.excel_status.configure(text="Datos listos", text_color=theme.SUCCESS)
+            self.sage_status.configure(text="Datos listos para Sage", text_color=theme.SUCCESS)
             self._update_stat_chip(self._stat_data, "Cargados ✓", theme.SUCCESS)
         else:
-            self.excel_status.configure(text="Sin datos", text_color=theme.TEXT_SECONDARY)
+            self.sage_status.configure(text="Sin datos", text_color=theme.TEXT_SECONDARY)
             self._update_stat_chip(self._stat_data, "Sin cargar", theme.TEXT_MUTED)
-
-        if has_excel:
-            self._update_stat_chip(self._stat_excel, "Abierta ✓", theme.SUCCESS)
-        else:
-            self._update_stat_chip(self._stat_excel, "No abierta", theme.TEXT_MUTED)
 
         inv_label = str(inv)[:28] if inv else "—"
         self._update_stat_chip(self._stat_invoice, inv_label, theme.CYAN if inv else theme.TEXT_MUTED)
-
-        if self.last_excel:
-            self.excel_path_label.configure(text=f"Plantilla: {self.last_excel.name}")
         self._update_workflow_status()
 
     def _update_stat_chip(self, chip: ctk.CTkFrame, value: str, color: str) -> None:
@@ -788,7 +759,7 @@ class AutoHubApp(ctk.CTk):
             self.editor._set_dirty(True)
         if frame.empty:
             self.current_invoice = None
-            self._set_excel_status()
+            self._set_sage_status()
             return
         try:
             from src.sage_excel import dataframe_to_invoice
@@ -798,10 +769,10 @@ class AutoHubApp(ctk.CTk):
             if inv and "Invoice Number" in frame.columns:
                 subset = frame[frame["Invoice Number"].astype(str) == str(inv)]
             self.current_invoice = dataframe_to_invoice(subset, self.sim_config, invoice_number=inv)
-            self._set_excel_status()
+            self._set_sage_status()
         except Exception as exc:
             self.current_invoice = None
-            self._set_excel_status()
+            self._set_sage_status()
             self._log(f"Aviso editor: {exc}")
         self._update_workflow_status()
 
@@ -827,7 +798,7 @@ class AutoHubApp(ctk.CTk):
         except Exception as exc:
             self.current_invoice = None
             self._log(f"Carga Sage requiere una factura: {exc}")
-        self._set_excel_status()
+        self._set_sage_status()
         self._update_workflow_status()
 
     def _show_preview(
@@ -904,51 +875,58 @@ class AutoHubApp(ctk.CTk):
         try:
             raw = load_sika_test_rows(ROOT)
             warnings = [
-                "Prueba SDK: factura PsKloud *0000001 (Miguel del Rio, 3 lineas Sika).",
-                "En Sage de prueba el cliente sera "
-                + TEST_CUSTOMER_ID
-                + " y la fecha de hoy (ano abierto).",
-                "montoneto a veces no cuadra con cantidad x preciounit; se envia el neto de linea.",
+                "Factura Sika *0000001 (Miguel del Rio, 3 lineas).",
+                "Cliente Sage: " + TEST_CUSTOMER_ID + ". Fecha: la de la factura.",
+                "Si montoneto no cuadra con cantidad x preciounit, se envia el neto de linea.",
             ]
             valid, rejected = validate_rows(raw, self.config)
             if not valid:
                 valid = raw
-                warnings.append("Validacion Auto-Hub rechazo por descuento/RUC; se carga igual para la prueba SDK.")
+                warnings.append("La validacion rechazo descuento/RUC; se carga igual para enviar a Sage.")
                 rejected = []
             frame = transform_rows(valid, self.config)
-            self._show_preview("SDK prueba *0000001", frame, valid, rejected, warnings)
-            self._add_job("Cargada prueba Sika *0000001", "ok")
-            self._log("Cargadas 3 lineas Sika (*0000001). Paso 3 → SDK prueba.")
+            self._show_preview("Sika *0000001", frame, valid, rejected, warnings)
+            self._add_job("Factura Sika *0000001", "ok")
+            self._log("Cargadas 3 lineas Sika (*0000001). Paso 3 → Enviar a Sage.")
         except Exception as exc:
-            show_error(self, "Prueba SDK", "No se pudo cargar la prueba Sika:\n" + str(exc))
-            self._log(f"ERROR prueba Sika: {type(exc).__name__}: {exc}")
+            show_error(self, "Factura Sika", "No se pudo cargar la factura Sika:\n" + str(exc))
+            self._log(f"ERROR Factura Sika: {type(exc).__name__}: {exc}")
 
     def on_send_sage_sdk_test(self) -> None:
-        rows = self.valid_rows or []
+        rows = list(self.valid_rows or [])
+        inv = self.editor.selected_invoice if hasattr(self, "editor") else None
+        if inv:
+            rows = [row for row in rows if str(row.get("numero_factura") or "") == str(inv)]
         if not rows:
-            try:
-                rows = load_sika_test_rows(ROOT)
-            except Exception as exc:
-                show_error(self, "SDK", "No hay factura cargada. " + str(exc))
-                return
+            show_warning(
+                self,
+                "Sin factura",
+                "Importa las facturas desde PsKloud (paso 1) y selecciona una antes de enviar.",
+            )
+            return
+        fechas = sorted({str(row.get("fecha_emision") or "")[:10] for row in rows if row.get("fecha_emision")})
+        fecha_txt = ", ".join(fechas) if fechas else "(sin fecha)"
+        cliente_txt = (
+            str(rows[0].get("cliente_nombre") or rows[0].get("cliente_codigo") or "(sin cliente)")
+        )
         if not ask_confirm(
             self,
-            "Enviar a Sage (prueba)",
+            "Enviar a Sage",
             "Se escribira 1 factura en:\n"
             + TEST_COMPANY
             + "\nCliente: "
-            + TEST_CUSTOMER_ID
+            + cliente_txt
+            + "\nFecha: "
+            + fecha_txt
             + "\nLineas: "
             + str(len(rows))
-            + "\n\nNO toca LYL CONSTRUCTIONS SUPPLY INC 2025.\n\n"
-            "Si Sage pide permiso: deja la empresa de prueba ABIERTA\n"
-            "y elige ALWAYS ALLOW (una vez). Luego ya no lo pedira.",
+            + "\n\nSi Sage pide permiso, deja la empresa abierta y elige Always Allow.",
         ):
             return
 
         self._go_step(3)
-        self._add_job("SDK prueba", "running")
-        self._log("SDK prueba — compilando y enviando...")
+        self._add_job("Enviar a Sage", "running")
+        self._log("Enviando factura a Sage 50...")
         if hasattr(self, "sdk_btn"):
             self.sdk_btn.configure(state="disabled")
         if hasattr(self, "auth_btn"):
@@ -961,7 +939,10 @@ class AutoHubApp(ctk.CTk):
                     rows,
                     on_log=lambda msg: self.after(0, self._log, msg),
                 )
-                self.after(0, self._on_sdk_done, True, "OK — factura enviada a empresa de prueba. Busca prefijo AH.")
+                self.after(0, self._on_sdk_done, True, "Factura enviada a Sage 50. Busca Invoice No. AHC / AHR / AHA.")
+            except DuplicateSageInvoice as exc:
+                msg = str(exc)
+                self.after(0, lambda m=msg: self._on_sdk_done(False, m, duplicate=True))
             except Exception as exc:
                 self.after(0, self._on_sdk_done, False, str(exc))
 
@@ -970,17 +951,17 @@ class AutoHubApp(ctk.CTk):
     def on_authorize_sage(self) -> None:
         if not ask_confirm(
             self,
-            "Autorizar Sage",
+            "Conectar Sage",
             "1. Abre Sage 50\n"
-            "2. Entra a LYL CONST CIA de PRUEBA\n"
-            "3. Pulsa OK aqui y, cuando salga el dialogo, elige ALWAYS ALLOW\n\n"
-            "Con Always Allow no tendras que cerrar/abrir Sage en cada carga.",
+            "2. Entra a LYL CONSTRUCTIONS SUPPLY INC 2025-2026\n"
+            "3. Pulsa Confirmar y, cuando Sage pregunte, elige Always Allow\n\n"
+            "Con Always Allow no tendras que repetir este paso en cada carga.",
         ):
             return
 
         self._go_step(3)
-        self._add_job("Autorizar Sage", "running")
-        self._log("Autorizar Sage — esperando Always Allow...")
+        self._add_job("Conectar Sage", "running")
+        self._log("Conectando con Sage 50 — esperando Always Allow...")
         if hasattr(self, "sdk_btn"):
             self.sdk_btn.configure(state="disabled")
         if hasattr(self, "auth_btn"):
@@ -996,25 +977,28 @@ class AutoHubApp(ctk.CTk):
                     0,
                     self._on_sdk_done,
                     True,
-                    "OK — acceso Granted. Ya puedes usar SDK prueba sin cerrar/abrir Sage.",
+                    "OK — Sage conectado. Ya puedes usar Enviar a Sage.",
                 )
             except Exception as exc:
                 self.after(0, self._on_sdk_done, False, str(exc))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_sdk_done(self, ok: bool, message: str) -> None:
+    def _on_sdk_done(self, ok: bool, message: str, duplicate: bool = False) -> None:
         if hasattr(self, "sdk_btn"):
             self.sdk_btn.configure(state="normal")
         if hasattr(self, "auth_btn"):
             self.auth_btn.configure(state="normal")
         self._log(message)
         if ok:
-            self._add_job("Sage SDK OK", "ok")
-            show_info(self, "Sage SDK", message)
+            self._add_job("Sage conectado", "ok")
+            show_info(self, "Sage 50", message)
+        elif duplicate:
+            self._add_job("Sage: ya enviada", "ok")
+            show_warning(self, "Ya esta en Sage", message)
         else:
-            self._add_job("Sage SDK fallo", "error")
-            show_error(self, "Sage SDK", message)
+            self._add_job("Sage: error", "error")
+            show_error(self, "Sage 50", message)
 
     def on_extract_pdf(self) -> None:
         if not self._confirm_overwrite():
@@ -1083,69 +1067,6 @@ class AutoHubApp(ctk.CTk):
         except Exception as exc:
             show_error(self, "Error", str(exc))
 
-    def on_prepare_excel(self) -> None:
-        self._ensure_template()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output = ROOT / self.sim_config["paths"]["output_dir"] / f"sage_live_{timestamp}.xlsx"
-        from src.sage_excel import copy_empty_workbook
-
-        self.last_excel = copy_empty_workbook(ROOT, self.sim_config, output)
-        self._log(f"Abriendo Excel: {self.last_excel.name}")
-        os.startfile(str(self.last_excel))
-        self.excel_open = True
-        self._set_excel_status()
-        self._add_job(f"Excel: {self.last_excel.name}", "ok")
-        show_info(
-            self,
-            "Plantilla lista",
-            f"Plantilla Sage abierta:\n{self.last_excel.name}\n\nAhora pulsa START.",
-        )
-
-    def on_start_automation(self) -> None:
-        if self.current_invoice is None:
-            show_warning(self, "Sin datos", "Selecciona una factura en el Editor y vuelve a intentar.")
-            return
-        inv = self.editor.selected_invoice if hasattr(self, "editor") else None
-        if not inv and self.editor.dataframe["Invoice Number"].nunique() > 1:
-            show_warning(
-                self,
-                "Varias facturas",
-                "Hay varias facturas cargadas. Selecciona una en el Editor antes de usar START.",
-            )
-            return
-        if not self.excel_open or self.last_excel is None:
-            if not ask_confirm(self, "Abrir Excel", "Excel no está abierto. ¿Abrirlo ahora?"):
-                return
-            self.on_prepare_excel()
-
-        self._go_step(3)
-        self._add_job("Automatizacion START", "running")
-        self._log("▶ START — automatización iniciada...")
-        self.start_btn.configure(state="disabled", text="Ejecutando...")
-
-        invoice = self.current_invoice
-
-        def worker() -> None:
-            try:
-                from src.excel_automation import run_excel_automation
-
-                run_excel_automation(
-                    self.last_excel,
-                    invoice,
-                    ROOT,
-                    on_step=lambda msg: self.after(0, self._log, msg),
-                )
-                self.after(0, lambda: self._add_job("Automatización OK", "ok"))
-                self.after(0, lambda: self._log("✅ START completado."))
-                self.after(0, lambda: show_info(self, "Completado", "Excel llenado automáticamente."))
-            except Exception as exc:
-                self.after(0, lambda: show_error(self, "Error", str(exc)))
-                self.after(0, lambda: self._add_job("Automatización falló", "error"))
-            finally:
-                self.after(0, lambda: self.start_btn.configure(state="normal", text="▶ START"))
-
-        threading.Thread(target=worker, daemon=True).start()
-
     def on_export(self) -> None:
         frame = self.editor.dataframe
         if frame is None or frame.empty:
@@ -1169,13 +1090,6 @@ class AutoHubApp(ctk.CTk):
         except Exception as exc:
             show_error(self, "Error", str(exc))
 
-    def _ensure_template(self) -> None:
-        template = ROOT / self.sim_config["paths"]["template"]
-        if not template.exists():
-            from src.sage_excel import create_sage_template
-
-            create_sage_template(ROOT, self.sim_config)
-
     def on_reset(self) -> None:
         import subprocess
 
@@ -1188,9 +1102,7 @@ class AutoHubApp(ctk.CTk):
         if hasattr(self, "editor"):
             self.editor.load_dataframe(pd.DataFrame())
         self.current_invoice = None
-        self.excel_open = False
-        self.last_excel = None
-        self._set_excel_status()
+        self._set_sage_status()
         self._log("Datos locales restablecidos.")
 
 

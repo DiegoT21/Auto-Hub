@@ -5,7 +5,7 @@ cd /d "%~dp0"
 echo.
 echo === Auto-Hub Sage SDK - DUMP SCHEMA (SOLO LECTURA) ===
 echo VERSION esperada: 2026-08-17-schema-b
-echo Empresa: LYL CONSTRUCTIONS SUPPLY INC 2025
+echo Empresa: LYL CONSTRUCTIONS SUPPLY INC 2025-2026
 echo Incluye: lineas ApplyToSalesLines + customers_crosswalk_template.csv
 echo Carpeta: %CD%
 echo.
@@ -84,7 +84,7 @@ echo.
 echo Ejecutando dump (lectura)...
 echo Si pide Always Allow en Sage -^> aceptar
 echo.
-DumpSageSchema.exe "LYL CONSTRUCTIONS SUPPLY INC 2025" "%SAGE_APP_ID%"
+DumpSageSchema.exe "LYL CONSTRUCTIONS SUPPLY INC 2025-2026" "%SAGE_APP_ID%"
 echo.
 echo Codigo de salida: %ERRORLEVEL%
 echo.

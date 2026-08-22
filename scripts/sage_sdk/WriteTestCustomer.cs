@@ -14,7 +14,7 @@ namespace AutoHub.SageWriteProbe
 {
     internal static class Program
     {
-        private const string DefaultCompany = "LYL CONST CIA de PRUEBA";
+        private const string DefaultCompany = "LYL CONSTRUCTIONS SUPPLY INC 2025-2026";
         private const string TestCustomerId = "AUTOHUB-TEST";
         private const string TestCustomerName = "AUTO-HUB PRUEBA SDK - BORRAR";
 
@@ -291,7 +291,7 @@ namespace AutoHub.SageWriteProbe
                 Console.WriteLine();
                 Console.WriteLine("=== ACCION EN SAGE ===");
                 Console.WriteLine("1. Close Company en Sage");
-                Console.WriteLine("2. Abre LYL CONST CIA de PRUEBA");
+                Console.WriteLine("2. Abre LYL CONSTRUCTIONS SUPPLY INC 2025-2026");
                 Console.WriteLine("3. Always Allow");
                 Console.WriteLine("Esperando hasta 3 minutos...");
                 Console.WriteLine();

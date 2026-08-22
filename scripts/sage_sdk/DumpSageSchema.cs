@@ -2,7 +2,7 @@
  * SOLO LECTURA - inventariar campos/valores de la empresa Sage real
  * para mapear PsKloud -> Sage.
  *
- * Empresa por defecto: LYL CONSTRUCTIONS SUPPLY INC 2025
+ * Empresa por defecto: LYL CONSTRUCTIONS SUPPLY INC 2025-2026
  * Sale a: dump\schema_summary.txt, customers.json, invoices.json, types.json
  */
 using System;
@@ -22,7 +22,7 @@ namespace AutoHub.SageSchemaDump
 {
     internal static class Program
     {
-        private const string DefaultCompany = "LYL CONSTRUCTIONS SUPPLY INC 2025";
+        private const string DefaultCompany = "LYL CONSTRUCTIONS SUPPLY INC 2025-2026";
         private const string ProbeVersion = "2026-08-17-schema-b";
         private const int MaxCustomers = 80;
         private const int MaxInvoices = 12;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,92 @@ CANONICAL_COLUMNS = """
     tasa_itbms,
     total_linea
 """
+
+SUCURSAL_LABELS = {
+    "01": "ADI SUPPLY",
+    "02": "CORONADO",
+    "03": "RIO ABAJO",
+}
+
+
+def _label_sucursal(codigo: str) -> str:
+    code = str(codigo or "").strip()
+    return SUCURSAL_LABELS.get(code, "SIN SUCURSAL" if not code else code)
+
+
+def _parse_factura_key(factura_id: Any) -> tuple[str, str, str, str] | None:
+    parts = str(factura_id or "").split(":")
+    if len(parts) != 4:
+        return None
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def _attach_sucursal(conn: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rellena sucursal con un lookup indexado a opermv (sin CONCAT sobre la vista)."""
+    if not rows or isinstance(conn, sqlite3.Connection):
+        for row in rows:
+            row.setdefault("sucursal", str(row.get("sucursal") or ""))
+            row.setdefault("sucursal_codigo", str(row.get("sucursal_codigo") or ""))
+        return rows
+
+    docs: dict[tuple[str, str, str, str], None] = {}
+    parsed: list[tuple[dict[str, Any], tuple[str, str, str, str]]] = []
+    for row in rows:
+        key = _parse_factura_key(row.get("factura_id"))
+        if key is None:
+            row.setdefault("sucursal", str(row.get("sucursal") or "SIN SUCURSAL"))
+            row.setdefault("sucursal_codigo", "")
+            continue
+        docs[key] = None
+        parsed.append((row, key))
+    if not docs:
+        return rows
+
+    placeholders = ",".join(["(?, ?, ?, ?)"] * len(docs))
+    flat: list[str] = []
+    for emp, agencia, tipo, documento in docs:
+        flat.extend([emp, agencia, tipo, documento])
+    lines = fetch_all(
+        conn,
+        f"""
+            SELECT
+                id_empresa,
+                agencia,
+                tipodoc,
+                documento,
+                origen,
+                TRIM(almacen) AS sucursal_codigo
+            FROM opermv
+            WHERE (id_empresa, agencia, tipodoc, documento) IN ({placeholders})
+        """,
+        tuple(flat),
+    )
+    by_line: dict[tuple[tuple[str, str, str, str], Any], str] = {}
+    by_doc: dict[tuple[str, str, str, str], set[str]] = {}
+    for rec in lines:
+        key = (str(rec["id_empresa"]), str(rec["agencia"]), str(rec["tipodoc"]), str(rec["documento"]))
+        code = str(rec.get("sucursal_codigo") or "").strip()
+        by_line[(key, rec.get("origen"))] = code
+        by_doc.setdefault(key, set()).add(code)
+
+    for row, key in parsed:
+        linea = row.get("linea")
+        if linea is not None and (key, linea) in by_line:
+            codes = [by_line[(key, linea)]]
+        else:
+            codes = sorted(c for c in by_doc.get(key, set()) if c)
+        if not codes:
+            row["sucursal_codigo"] = ""
+            row["sucursal"] = "SIN SUCURSAL"
+            continue
+        labels = []
+        for code in codes:
+            label = _label_sucursal(code)
+            if label not in labels:
+                labels.append(label)
+        row["sucursal_codigo"] = ",".join(codes)
+        row["sucursal"] = ", ".join(labels)
+    return rows
 
 
 def _source_mode(config: dict[str, Any]) -> str:
@@ -80,7 +167,7 @@ def extract_invoices(config: dict[str, Any], root: Path) -> list[dict[str, Any]]
             query += " ORDER BY fecha_emision, factura_id, linea"
         conn = connect(config, root)
         try:
-            return fetch_all(conn, query, params)
+            return _attach_sucursal(conn, fetch_all(conn, query, params))
         finally:
             conn.close()
 
@@ -139,52 +226,68 @@ def preview_invoice_headers(
     date_from: str | None = None,
     customer_query: str | None = None,
     limit: int | None = None,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Lista encabezados de facturas pendientes para previsualizacion."""
     row_limit = limit if limit is not None else _preview_limit(config)
+    row_offset = max(0, int(offset or 0))
     if _source_mode(config) == "canonical_view":
-        view = _canonical_view(config)
-        query = f"""
+        query = """
             SELECT
-                factura_id,
-                numero_factura,
-                fecha_emision,
-                subtotal,
-                itbms_factura,
-                total_factura,
-                cliente_codigo,
-                cliente_nombre,
-                ruc,
+                CONCAT(h.id_empresa, ':', h.agencia, ':', h.tipodoc, ':', h.documento) AS factura_id,
+                COALESCE(
+                    NULLIF(TRIM(h.documentofiscal), ''),
+                    CONCAT('FAC-', LPAD(TRIM(TRIM(LEADING '0' FROM TRIM(h.documento))), 8, '0'))
+                ) AS numero_factura,
+                DATE(h.emision) AS fecha_emision,
+                h.totneto AS subtotal,
+                h.totimpuest AS itbms_factura,
+                h.totalfinal AS total_factura,
+                TRIM(h.codcliente) AS cliente_codigo,
+                TRIM(h.nombrecli) AS cliente_nombre,
+                TRIM(h.rif) AS ruc,
                 COUNT(*) AS line_count
-            FROM {view}
-            WHERE 1 = 1
+            FROM operti h
+            JOIN opermv d
+              ON h.id_empresa = d.id_empresa
+             AND h.agencia = d.agencia
+             AND h.tipodoc = d.tipodoc
+             AND h.documento = d.documento
+            WHERE h.tipodoc = 'FAC'
+              AND h.totalfinal > 0
+              AND TRIM(h.estatusdoc) IN ('0', '2')
+              AND d.cantidad > 0
         """
         params: list[Any] = []
         if date_from:
-            query += " AND fecha_emision >= ?"
+            query += " AND h.emision >= ?"
             params.append(date_from)
         if customer_query:
-            query += " AND (cliente_nombre LIKE ? OR cliente_codigo LIKE ? OR numero_factura LIKE ?)"
+            query += " AND (h.nombrecli LIKE ? OR h.codcliente LIKE ? OR h.documentofiscal LIKE ? OR h.documento LIKE ?)"
             like = f"%{customer_query}%"
-            params.extend([like, like, like])
+            params.extend([like, like, like, like])
         query += """
             GROUP BY
-                factura_id,
-                numero_factura,
-                fecha_emision,
-                subtotal,
-                itbms_factura,
-                total_factura,
-                cliente_codigo,
-                cliente_nombre,
-                ruc
-            ORDER BY fecha_emision DESC, factura_id DESC
-            LIMIT ?
+                h.id_empresa,
+                h.agencia,
+                h.tipodoc,
+                h.documento,
+                h.documentofiscal,
+                h.emision,
+                h.totneto,
+                h.totimpuest,
+                h.totalfinal,
+                h.codcliente,
+                h.nombrecli,
+                h.rif
+            ORDER BY h.emision DESC, h.documento DESC
+            LIMIT ? OFFSET ?
         """
         params.append(row_limit)
+        params.append(row_offset)
         conn = connect(config, root)
         try:
-            return fetch_all(conn, query, tuple(params))
+            return _attach_sucursal(conn, fetch_all(conn, query, tuple(params)))
         finally:
             conn.close()
 
@@ -213,8 +316,9 @@ def preview_invoice_headers(
         query += " AND (c.nombre LIKE ? OR c.codigo LIKE ? OR f.numero_factura LIKE ?)"
         like = f"%{customer_query}%"
         params.extend([like, like, like])
-    query += " ORDER BY f.fecha_emision DESC, f.id DESC LIMIT ?"
+    query += " ORDER BY f.fecha_emision DESC, f.id DESC LIMIT ? OFFSET ?"
     params.append(row_limit)
+    params.append(row_offset)
 
     conn = connect(config, root)
     try:
@@ -243,7 +347,7 @@ def extract_invoices_by_ids(
         """
         conn = connect(config, root)
         try:
-            return fetch_all(conn, query, tuple(invoice_ids))
+            return _attach_sucursal(conn, fetch_all(conn, query, tuple(invoice_ids)))
         finally:
             conn.close()
 

@@ -1,62 +1,24 @@
 [
   {
-    "sentAt": "2026-08-18T14:30:00Z",
+    "sentAt": "2026-08-21T21:47:27Z",
     "record": {
-      "factura_id": "*0000001",
-      "numero_factura": "*0000001",
-      "fecha_emision": "2024-01-26",
-      "subtotal": "33.84",
-      "itbms_factura": "2.37",
-      "total_factura": "36.21",
-      "cliente_codigo": "8-770-1583",
-      "cliente_nombre": "MIGUEL DEL RIO",
-      "ruc": "CF",
-      "linea": "1",
-      "descripcion": "SIKAFLEX 221 BLANCO (300ML)",
-      "cantidad": "3",
-      "precio_unitario": "7.70",
-      "tasa_itbms": "0.0700",
-      "total_linea": "21.945"
-    }
-  },
-  {
-    "sentAt": "2026-08-18T14:30:00Z",
-    "record": {
-      "factura_id": "*0000001",
-      "numero_factura": "*0000001",
-      "fecha_emision": "2024-01-26",
-      "subtotal": "33.84",
-      "itbms_factura": "2.37",
-      "total_factura": "36.21",
-      "cliente_codigo": "8-770-1583",
-      "cliente_nombre": "MIGUEL DEL RIO",
-      "ruc": "CF",
-      "linea": "2",
-      "descripcion": "SIKACRYL150 BLANCO (300ML)",
-      "cantidad": "2",
-      "precio_unitario": "4.10",
-      "tasa_itbms": "0.0700",
-      "total_linea": "7.79"
-    }
-  },
-  {
-    "sentAt": "2026-08-18T14:30:00Z",
-    "record": {
-      "factura_id": "*0000001",
-      "numero_factura": "*0000001",
-      "fecha_emision": "2024-01-26",
-      "subtotal": "33.84",
-      "itbms_factura": "2.37",
-      "total_factura": "36.21",
-      "cliente_codigo": "8-770-1583",
-      "cliente_nombre": "MIGUEL DEL RIO",
-      "ruc": "CF",
-      "linea": "3",
-      "descripcion": "SIKACRYL150 BLANCO (300ML)",
-      "cantidad": "1",
-      "precio_unitario": "4.10",
-      "tasa_itbms": "0.0700",
-      "total_linea": "4.10"
+      "factura_id": "000002:001:FAC:C0003294",
+      "numero_factura": "FE01200000907198-1-516233-7400002026082100000032942000110000132949",
+      "fecha_emision": "2026-08-21",
+      "subtotal": 36.64,
+      "itbms_factura": 2.56,
+      "total_factura": 39.2,
+      "cliente_codigo": "7-704-500",
+      "cliente_nombre": "CONSTRUCTORA SATURNO Y ASOCIADOS, S.A.",
+      "ruc": "7-704-500",
+      "linea": 1,
+      "descripcion": "SIKA GROUT 212 DE 30KG",
+      "cantidad": 1.0,
+      "precio_unitario": 36.64,
+      "tasa_itbms": 0.07,
+      "total_linea": 36.64,
+      "sucursal_codigo": "02",
+      "sucursal": "CORONADO"
     }
   }
 ]

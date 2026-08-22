@@ -36,6 +36,7 @@ def transform_rows(rows: list[dict[str, Any]], config: dict[str, Any]) -> pd.Dat
                 "Customer ID": row["cliente_codigo"],
                 "Customer Name": row["cliente_nombre"],
                 "RUC": row["ruc"],
+                "Sucursal": str(row.get("sucursal") or "").strip(),
                 "Item": str(row.get("descripcion", ""))[:12].replace(" ", "-"),
                 "GL Account": defaults.get("cuenta_gl", "4100"),
                 "Description": row["descripcion"],
@@ -49,7 +50,10 @@ def transform_rows(rows: list[dict[str, Any]], config: dict[str, Any]) -> pd.Dat
         )
 
     frame = pd.DataFrame(transformed)
-    for col in sage_columns:
+    cols = list(sage_columns)
+    if "Sucursal" not in cols:
+        cols.insert(4, "Sucursal")
+    for col in cols:
         if col not in frame.columns:
             frame[col] = ""
-    return frame[sage_columns]
+    return frame[cols]

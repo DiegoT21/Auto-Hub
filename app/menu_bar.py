@@ -126,7 +126,6 @@ class AppMenuBar(ctk.CTkFrame):
                 ("Actualizar Auto-Hub...", "update_app", ""),
                 (None, None, None),
                 ("Restablecer BD local...", "reset_db", ""),
-                ("Abrir plantilla Excel Sage", "open_excel_template", ""),
             ],
         )
 

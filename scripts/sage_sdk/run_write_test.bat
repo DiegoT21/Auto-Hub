@@ -5,7 +5,7 @@ cd /d "%~dp0"
 echo.
 echo === Auto-Hub Sage SDK - ESCRITURA de prueba ===
 echo Carpeta: %CD%
-echo SOLO empresa: LYL CONST CIA de PRUEBA
+echo SOLO empresa: LYL CONSTRUCTIONS SUPPLY INC 2025-2026
 echo Crea cliente: AUTOHUB-TEST
 echo.
 
@@ -62,7 +62,7 @@ echo.
 echo Ejecutando escritura de prueba...
 echo Si pide Always Allow en Sage -^> aceptar
 echo.
-WriteTestCustomer.exe "LYL CONST CIA de PRUEBA" "%SAGE_APP_ID%"
+WriteTestCustomer.exe "LYL CONSTRUCTIONS SUPPLY INC 2025-2026" "%SAGE_APP_ID%"
 echo.
 echo Codigo de salida: %ERRORLEVEL%
 pause

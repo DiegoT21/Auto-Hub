@@ -1,6 +1,6 @@
 /*
  * Prueba de ESCRITURA Sage 50 SDK US - factura de prueba.
- * SOLO empresa: LYL CONST CIA de PRUEBA
+ * SOLO empresa: LYL CONSTRUCTIONS SUPPLY INC 2025-2026
  * Cliente forzado: AUTOHUB-TEST
  * Lee sample_invoice.json (shape outbox: [{sentAt, record}, ...])
  *
@@ -24,7 +24,7 @@ namespace AutoHub.SageInvoiceProbe
 {
     internal static class Program
     {
-        private const string DefaultCompany = "LYL CONST CIA de PRUEBA";
+        private const string DefaultCompany = "LYL CONSTRUCTIONS SUPPLY INC 2025-2026";
         // Cliente real de la empresa de prueba (AUTOHUB-TEST a veces no sirve para facturar)
         private const string TestCustomerId = "C SUAREZ TORRE 1";
         private const string DefaultSamplePath = "sample_invoice.json";
@@ -148,10 +148,7 @@ namespace AutoHub.SageInvoiceProbe
 
             var first = records[0];
             var numeroOrigen = GetString(first, "numero_factura") ?? "SIN-NUM";
-            var fechaOrigen = ParseDate(GetString(first, "fecha_emision")) ?? DateTime.Today;
-            // Sage exige fecha dentro de un ano contable ABIERTO. PsKloud 2023-12-29
-            // suele estar cerrado en la empresa de prueba -> usar hoy.
-            var fechaEmision = DateTime.Today;
+            var fechaEmision = ParseDate(GetString(first, "fecha_emision")) ?? DateTime.Today;
             // Sage ReferenceNumber suele ser corto; AH + yyyyMMddHHmmss = 16 chars
             var refNumber = "AH" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
             if (refNumber.Length > 20)
@@ -159,9 +156,8 @@ namespace AutoHub.SageInvoiceProbe
 
             Console.WriteLine("Factura origen PsKloud: " + numeroOrigen +
                 " (factura_id=" + GetString(first, "factura_id") + ", lineas=" + records.Count + ")");
-            Console.WriteLine("Fecha emision origen:  " + fechaOrigen.ToString("yyyy-MM-dd") +
-                " (ano posiblemente cerrado)");
-            Console.WriteLine("Fecha en Sage (prueba): " + fechaEmision.ToString("yyyy-MM-dd") + " <- hoy");
+            Console.WriteLine("Fecha en Sage: " + fechaEmision.ToString("yyyy-MM-dd") +
+                " (fecha de la factura; Sage exige periodo abierto)");
             Console.WriteLine("ReferenceNumber Sage:  " + refNumber);
             Console.WriteLine("Nota: AH-TEST factura PsKloud " + numeroOrigen);
             Console.WriteLine();
@@ -1144,7 +1140,7 @@ namespace AutoHub.SageInvoiceProbe
                 Console.WriteLine();
                 Console.WriteLine("=== ACCION EN SAGE (una sola vez) ===");
                 Console.WriteLine("1. Deja Sage 50 ABIERTO (no lo cierres).");
-                Console.WriteLine("2. Abre la empresa: LYL CONST CIA de PRUEBA");
+                Console.WriteLine("2. Abre la empresa: LYL CONSTRUCTIONS SUPPLY INC 2025-2026");
                 Console.WriteLine("3. En el dialogo, elige ALWAYS ALLOW (no solo Allow).");
                 Console.WriteLine("4. Con Always Allow, las siguientes cargas no piden permiso.");
                 Console.WriteLine("Esperando hasta 3 minutos...");

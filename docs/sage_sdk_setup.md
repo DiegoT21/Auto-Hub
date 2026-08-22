@@ -4,8 +4,8 @@
 
 | Campo | Valor |
 |-------|--------|
-| **Nombre** | `LYL CONST CIA de PRUEBA` |
-| **Ruta datos** | `C:\Sage\Peachtree\Company\lylconci` |
+| **Nombre** | `LYL CONSTRUCTIONS SUPPLY INC 2025-2026` |
+| **Ruta datos** | `C:\Sage\Peachtree\Company\LYLCONSTRUCTIONSSUP1` |
 | **SDK** | `C:\Archivos de programa (x86)\Sage\Peachtree\API\Sage.Peachtree.API.dll` |
 
 Usar **solo esta empresa** para pruebas hasta validar importación de facturas.
@@ -31,7 +31,7 @@ Usar **solo esta empresa** para pruebas hasta validar importación de facturas.
 ## Prueba de escritura: cliente
 
 1. Ejecutar **`ABRIR_WRITE_TEST.bat`** (ventana que no se cierra sola).
-2. Si pide autorización → **Always Allow** en Sage al abrir `LYL CONST CIA de PRUEBA`.
+2. Si pide autorización → **Always Allow** en Sage al abrir `LYL CONSTRUCTIONS SUPPLY INC 2025-2026`.
 3. Esperado: `Autorizacion: Granted` y `OK - Cliente guardado`.
 4. Verificar en Sage: **Customers & Sales → Customers** → ID `AUTOHUB-TEST`.
 
@@ -61,7 +61,7 @@ ORDER BY linea;
 
 1. Asegurar `app_id.txt`, cliente `AUTOHUB-TEST` y `sample_invoice.json` en `scripts\sage_sdk\`.
 2. Doble clic **`ABRIR_WRITE_INVOICE.bat`** (o `run_write_invoice.bat`).
-3. Si Sage pide acceso → cerrar/abrir **LYL CONST CIA de PRUEBA** → **Always Allow**.
+3. Si Sage pide acceso → cerrar/abrir **LYL CONSTRUCTIONS SUPPLY INC 2025-2026** → **Always Allow**.
 4. Resultado esperado en consola:
    - `Autorizacion: Granted`
    - `OK - Factura guardada`

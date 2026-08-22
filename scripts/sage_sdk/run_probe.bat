@@ -78,7 +78,7 @@ if errorlevel 1 (
 
 REM Nota: cada vez que recompilas, Sage puede pedir autorizar de nuevo.
 REM Si ya autorizaste y solo quieres probar otra vez sin recompilar:
-REM   ProbeSageSdk.exe "LYL CONST CIA de PRUEBA"
+REM   ProbeSageSdk.exe "LYL CONSTRUCTIONS SUPPLY INC 2025-2026"
 
 echo.
 echo Ejecutando prueba ...
@@ -86,7 +86,7 @@ echo Si Sage pide autorizar la app -^> Si / Allow
 echo.
 
 if "%~1"=="" (
-  ProbeSageSdk.exe "LYL CONST CIA de PRUEBA" "%SAGE_APP_ID%"
+  ProbeSageSdk.exe "LYL CONSTRUCTIONS SUPPLY INC 2025-2026" "%SAGE_APP_ID%"
 ) else (
   ProbeSageSdk.exe %*
 )

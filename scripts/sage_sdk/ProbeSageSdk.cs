@@ -12,7 +12,7 @@ namespace AutoHub.SageProbe
 {
     internal static class Program
     {
-        private const string DefaultCompany = "LYL CONST CIA de PRUEBA";
+        private const string DefaultCompany = "LYL CONSTRUCTIONS SUPPLY INC 2025-2026";
 
         private static string NormalizeCompanyName(string value)
         {
@@ -81,7 +81,7 @@ namespace AutoHub.SageProbe
                     Console.WriteLine("El aviso sale DENTRO de Sage al abrir la empresa:");
                     Console.WriteLine("  1. Abre Sage 50.");
                     Console.WriteLine("  2. Si la empresa ya esta abierta, CIERRALA (File > Close Company).");
-                    Console.WriteLine("  3. Vuelve a ABRIR: LYL CONST CIA de PRUEBA");
+                    Console.WriteLine("  3. Vuelve a ABRIR: LYL CONSTRUCTIONS SUPPLY INC 2025-2026");
                     Console.WriteLine("  4. Cuando Sage pregunte Allow / Always Allow -> Always Allow");
                     Console.WriteLine("  5. Esta ventana seguira esperando hasta 3 minutos...");
                     Console.WriteLine();

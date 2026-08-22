@@ -6,7 +6,7 @@ echo.
 echo === Auto-Hub Sage SDK - ESCRITURA factura de prueba ===
 echo VERSION esperada en consola: 2026-08-17-g
 echo Carpeta: %CD%
-echo SOLO empresa: LYL CONST CIA de PRUEBA
+echo SOLO empresa: LYL CONSTRUCTIONS SUPPLY INC 2025-2026
 echo Cliente: C SUAREZ TORRE 1
 echo Sample: sample_invoice.json
 echo.
@@ -91,7 +91,7 @@ echo.
 echo Ejecutando escritura de factura de prueba...
 echo Si pide Always Allow en Sage -^> aceptar
 echo.
-WriteTestInvoice.exe "LYL CONST CIA de PRUEBA" "%SAGE_APP_ID%" "sample_invoice.json"
+WriteTestInvoice.exe "LYL CONSTRUCTIONS SUPPLY INC 2025-2026" "%SAGE_APP_ID%" "sample_invoice.json"
 echo.
 echo Codigo de salida: %ERRORLEVEL%
 pause

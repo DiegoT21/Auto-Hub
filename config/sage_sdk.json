@@ -6,8 +6,8 @@
   "application_id": "",
   "application_id_help": "Obtener de Sage: sdk.50us@sage.com. Sin ID solo abren companias sample oficiales.",
   "test_company": {
-    "name": "LYL CONST CIA  de PRUEBA",
-    "path": "C:\\Sage\\Peachtree\\Company\\lylconci"
+    "name": "LYL CONSTRUCTIONS SUPPLY INC 2025-2026",
+    "path": "C:\\Sage\\Peachtree\\Company\\LYLCONSTRUCTIONSSUP1"
   },
   "notes": [
     "Dejar Sage 50 cerrado o abierto; la primera vez puede pedir autorizar la app en Sage.",
