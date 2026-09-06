@@ -66,6 +66,7 @@ FONT_SUBTITLE = ("Segoe UI", 11)
 FONT_BODY = ("Segoe UI", 11)
 FONT_SMALL = ("Segoe UI", 10)
 FONT_MONO = ("Cascadia Mono", 10)
+FONT_LOG = ("Segoe UI", 13)
 FONT_LOGO = ("Segoe UI", 14, "bold")
 
 TABLE_HEADER = ("#E7EEF8", "#E7EEF8")

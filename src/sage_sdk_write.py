@@ -379,12 +379,55 @@ def authorize_sage_access(
     return _run_writer(root, [], on_log=log, auth_only=True)
 
 
-def _customer_from_rows(rows: list[dict[str, Any]]) -> tuple[str, str]:
+def _customer_map_paths(root: Path) -> list[Path]:
+    from src.paths import app_root, resource_root
+
+    return [
+        app_root() / "config" / "sage_customer_map.json",
+        root / "config" / "sage_customer_map.json",
+        resource_root() / "config" / "sage_customer_map.json",
+    ]
+
+
+def _load_customer_map(root: Path) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for path in _customer_map_paths(root):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for bucket in ("by_codigo", "by_nombre"):
+            block = data.get(bucket) or {}
+            if isinstance(block, dict):
+                for key, value in block.items():
+                    k = str(key or "").strip().upper()
+                    v = str(value or "").strip()
+                    if k and v:
+                        merged[k] = v
+        for key, value in data.items():
+            if key in ("by_codigo", "by_nombre") or not isinstance(value, str):
+                continue
+            k = str(key or "").strip().upper()
+            v = value.strip()
+            if k and v:
+                merged[k] = v
+        break
+    return merged
+
+
+def _customer_from_rows(root: Path, rows: list[dict[str, Any]]) -> tuple[str, str]:
     rec = rows[0] if rows else {}
-    return (
-        str(rec.get("cliente_codigo") or "").strip(),
-        str(rec.get("cliente_nombre") or "").strip(),
-    )
+    codigo = str(rec.get("cliente_codigo") or "").strip()
+    nombre = str(rec.get("cliente_nombre") or "").strip()
+    mapped = _load_customer_map(root)
+    sage_name = mapped.get(codigo.upper()) or mapped.get(nombre.upper())
+    if sage_name:
+        return sage_name, sage_name
+    return codigo, nombre
 
 
 SENT_LOG_NAME = "sage_sent.json"
@@ -516,11 +559,16 @@ def _run_writer(
 
     on_log("Conectando con Sage 50...")
     on_log("Empresa: " + TEST_COMPANY)
-    cust_id, cust_name = _customer_from_rows(rows)
+    cust_id, cust_name = _customer_from_rows(root, rows)
     if auth_only:
         on_log("Modo autorizar: espera Always Allow en Sage (hasta 3 min).")
     else:
+        origen = ""
+        if rows:
+            origen = str(rows[0].get("cliente_nombre") or rows[0].get("cliente_codigo") or "")
         on_log("Cliente factura: " + (cust_id or "(sin codigo)") + " | " + (cust_name or "(sin nombre)"))
+        if origen and cust_name and origen.strip().upper() != cust_name.strip().upper():
+            on_log("  Mapeado desde PsKloud: " + origen)
 
     cmd = [
         str(_powershell32()),

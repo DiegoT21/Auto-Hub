@@ -12,6 +12,8 @@ No hace falta iniciar sesion en GitHub ni instalar Python/Git en esa PC.
 
 El Application ID de Sage sigue en `C:\Temp\sage_sdk\app_id.txt` (no va en el ZIP).
 
+Ledger Bridge: copia el JWT **injector** a `config/ledger_bridge.jwt` (una linea). No va en git ni en el ZIP. En Automatico, Auto-Hub baja `GET /v1/pending` y confirma con `POST /v1/ack`.
+
 ### Actualizar despues
 
 Pasa un `AutoHub-update.zip` nuevo al Escritorio (o junto al exe) y pulsa **Actualizar app**.

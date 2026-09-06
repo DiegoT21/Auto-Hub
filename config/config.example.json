@@ -29,7 +29,12 @@
     "filter_unexported": false,
     "exported_field": "exportado",
     "use_id_watermark": false,
-    "canonical_view": "autohub_v_facturas"
+    "canonical_view": "autohub_v_facturas",
+    "extractor_outbox": ""
+  },
+  "ledger_bridge": {
+    "base_url": "https://bt41axxide.execute-api.us-east-1.amazonaws.com",
+    "credential_file": "config/ledger_bridge.jwt"
   },
   "mapping": {
     "sage_columns": [

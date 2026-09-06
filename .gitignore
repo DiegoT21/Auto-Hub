@@ -12,6 +12,8 @@ data/outbox/
 config/*.local.json
 config/connections.json
 config/config.json
+config/*.jwt
+*.jwt
 scripts/sage_sdk/app_id.txt
 scripts/sage_sdk/app_id.txt.example
 scripts/sage_sdk/*.exe

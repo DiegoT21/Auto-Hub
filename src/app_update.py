@@ -20,6 +20,7 @@ KEEP_RELATIVE = {
     "output",
     "state",
     "config/connections.json",
+    "config/ledger_bridge.jwt",
     "scripts/sage_sdk/app_id.txt",
 }
 

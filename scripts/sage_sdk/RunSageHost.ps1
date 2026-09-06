@@ -142,6 +142,87 @@ function Show-SageCustomers($customers, [int]$limit = 25) {
     }
 }
 
+function Save-SageEntity($entity) {
+    $m = $entity.GetType().GetMethod("Save", [Type]::EmptyTypes)
+    if ($null -eq $m) {
+        throw "Save() no existe en " + $entity.GetType().Name
+    }
+    try {
+        $m.Invoke($entity, $null) | Out-Null
+    }
+    catch {
+        $inner = $_.Exception
+        if ($inner.InnerException) { $inner = $inner.InnerException }
+        throw $inner
+    }
+}
+
+function Get-TemplateCustomer($customers) {
+    if (-not $customers) { return $null }
+    foreach ($want in @("CONTADO", "CREDITO", "CLIENTE CONTADO PA")) {
+        $norm = Normalize-Person $want
+        foreach ($c in $customers) {
+            if ((Normalize-Person $c.Name) -ne $norm -and (Normalize-Person $c.ID) -ne $norm) { continue }
+            try {
+                if ($c.UsualSalesAccountReference) { return $c }
+            }
+            catch { }
+        }
+    }
+    foreach ($c in $customers) {
+        try {
+            if ($c.UsualSalesAccountReference) { return $c }
+        }
+        catch { }
+    }
+    return $null
+}
+
+function New-SageCustomerId([string]$id, [string]$name) {
+    $raw = if ($id) { $id.Trim() } else { $name.Trim() }
+    if (-not $raw) {
+        return "AH" + (Get-Date).ToString("yyMMddHHmmss")
+    }
+    if ($raw.Length -gt 20) { $raw = $raw.Substring(0, 20) }
+    return $raw
+}
+
+function New-SageCustomer($company, [string]$id, [string]$name, [string]$ruc, $template) {
+    $factory = $company.Factories.CustomerFactory
+    $cust = $null
+    foreach ($method in @("Create", "CreateCustomer", "NewCustomer")) {
+        $cust = Invoke-SageMethod $factory $method
+        if ($null -ne $cust) { break }
+    }
+    if ($null -eq $cust) {
+        throw "no se pudo Create() Customer en Sage"
+    }
+    $safeId = New-SageCustomerId $id $name
+    $safeName = if ($name) { $name.Trim() } else { $safeId }
+    if ($safeName.Length -gt 52) { $safeName = $safeName.Substring(0, 52) }
+    Set-SageProp $cust "ID" $safeId | Out-Null
+    Set-SageProp $cust "Name" $safeName | Out-Null
+    if ($ruc) {
+        Set-SageProp $cust "AccountNumber" $ruc | Out-Null
+        Set-SageProp $cust "TaxID" $ruc | Out-Null
+        Set-SageProp $cust "CustomField1" $ruc | Out-Null
+    }
+    if ($template) {
+        try {
+            $gl = $template.UsualSalesAccountReference
+            if ($gl) {
+                Set-SageProp $cust "UsualSalesAccountReference" $gl | Out-Null
+            }
+        }
+        catch {
+            Write-Host ("  AVISO copiar GL del cliente plantilla: " + $_.Exception.Message)
+        }
+    }
+    Write-Host ("  Guardando cliente nuevo: " + $safeId + " | " + $safeName)
+    Save-SageEntity $cust
+    return $cust
+}
+
 function Find-SageCustomer($company, [string[]]$ids, [string[]]$names, [ref]$allOut) {
     $list = $company.Factories.CustomerFactory.List()
     try { $list.Load() } catch { }
@@ -191,6 +272,33 @@ function Find-SageCustomer($company, [string[]]$ids, [string[]]$names, [ref]$all
             if ($cid -and $cid.IndexOf($compact, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
                 Write-Host ("  Match por codigo compacto: " + $c.ID + " | " + $c.Name)
                 return $c
+            }
+        }
+    }
+
+    $skipLast = @("SA", "SAS", "SRL", "INC", "LTDA", "CIA", "CO")
+    foreach ($want in $nameSet) {
+        $parts = @($want.Split(" ") | Where-Object { $_ })
+        if ($parts.Count -lt 2) { continue }
+        $last = $parts[-1]
+        if ($last.Length -lt 4 -or $skipLast -contains $last) { continue }
+        $byId = @{}
+        foreach ($c in $customers) {
+            $cn = Normalize-Person $c.Name
+            $cparts = @($cn.Split(" ") | Where-Object { $_ })
+            if ($cparts.Count -ge 1 -and $cparts[-1] -eq $last) {
+                $byId[$c.ID] = $c
+            }
+        }
+        if ($byId.Count -eq 1) {
+            $one = @($byId.Values)[0]
+            Write-Host ("  Match por apellido unico (" + $last + "): " + $one.ID + " | " + $one.Name)
+            return $one
+        }
+        if ($byId.Count -gt 1) {
+            Write-Host ("  AVISO apellido " + $last + " coincide con " + $byId.Count + " clientes Sage; no se adivina.")
+            foreach ($h in $byId.Values) {
+                Write-Host ("    " + $h.ID + " | " + $h.Name)
             }
         }
     }
@@ -379,12 +487,38 @@ try {
 
         $loadedCustomers = $null
         $customer = Find-SageCustomer $opened @($CustomerId, $psId) @($CustomerName, $psName) ([ref]$loadedCustomers)
+        $createdNewCustomer = $false
         if ($null -eq $customer) {
-            Write-Host "No hay match. Clientes en Sage (muestra):"
-            Show-SageCustomers $loadedCustomers 25
-            Fail 3 ("no se encontro el cliente en Sage. Buscado: ID=" + $psId + " Nombre=" + $psName)
+            $wantId = if ($CustomerId) { $CustomerId } else { $psId }
+            $wantName = if ($CustomerName) { $CustomerName } else { $psName }
+            if (-not $wantId -and -not $wantName) {
+                Write-Host "No hay match. Clientes en Sage (muestra):"
+                Show-SageCustomers $loadedCustomers 25
+                Fail 3 "factura sin cliente (ID y nombre vacios). No se crea ficha en Sage."
+            }
+            Write-Host ("Cliente no existe en Sage. Se crea: ID=" + $wantId + " Nombre=" + $wantName)
+            $template = Get-TemplateCustomer $loadedCustomers
+            if ($template) {
+                Write-Host ("  GL copiado de: " + $template.ID + " | " + $template.Name)
+            }
+            $ruc = Get-RecordText $first "ruc"
+            if ($ruc -eq "CF") { $ruc = "" }
+            try {
+                $created = New-SageCustomer $opened $wantId $wantName $ruc $template
+                $createdNewCustomer = $true
+            }
+            catch {
+                Write-Host ("ERROR creando cliente: " + $_.Exception.Message)
+                Fail 3 ("no se pudo crear el cliente en Sage. Buscado: ID=" + $wantId + " Nombre=" + $wantName)
+            }
+            $reloaded = $null
+            $found = Find-SageCustomer $opened @($created.ID, $wantId) @($wantName) ([ref]$reloaded)
+            $customer = if ($found) { $found } else { $created }
         }
         Write-Host ("Cliente Sage: " + $customer.ID + " | " + $customer.Name)
+        if ($createdNewCustomer) {
+            Write-Host "  Alta nueva por Auto-Hub (primera factura lleva marca CLIENTE NUEVO)."
+        }
 
         $salesAcctRef = $null
         try { $salesAcctRef = $customer.UsualSalesAccountReference } catch {
@@ -425,6 +559,9 @@ try {
         Set-SageProp $invoice "InvoiceNumber" $refNumber | Out-Null
         Set-SageProp $invoice "Number" $refNumber | Out-Null
         $note = "AH " + $sucTxt + " | PsKloud " + $numeroOrigen + " id=" + (Get-RecordText $first "factura_id")
+        if ($createdNewCustomer) {
+            $note = "CLIENTE NUEVO | " + $note
+        }
         Set-SageProp $invoice "Note" $note | Out-Null
         Set-SageProp $invoice "InternalNote" $note | Out-Null
         Set-SageProp $invoice "Memo" $note | Out-Null
@@ -442,6 +579,9 @@ try {
             if (-not $desc) { $desc = "Linea $lineNo" }
             $suc = Get-RecordText $rec "sucursal"
             if ($suc) { $desc = "[" + $suc + "] " + $desc }
+            if ($createdNewCustomer -and $lineNo -eq 1) {
+                $desc = "[CLIENTE NUEVO] " + $desc
+            }
             $qty = Get-RecordDecimal $rec "cantidad" 1
             $price = Get-RecordDecimal $rec "precio_unitario" 0
             $amount = Get-RecordDecimal $rec "total_linea" ($qty * $price)

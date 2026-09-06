@@ -8,9 +8,10 @@ from pathlib import Path
 NEVER_OVERWRITE = {
     "config/connections.json",
     "config/config.json",
+    "config/ledger_bridge.jwt",
     "scripts/sage_sdk/app_id.txt",
 }
-ALWAYS_REFRESH_SUFFIXES = {".cs", ".bat", ".sql"}
+ALWAYS_REFRESH_SUFFIXES = {".cs", ".bat", ".sql", ".ps1"}
 
 
 def is_frozen() -> bool:

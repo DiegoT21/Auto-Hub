@@ -34,13 +34,25 @@ Actualizar despues
 2. Ponlo en el Escritorio o junto a AutoHub.exe.
 3. Abre Auto-Hub y pulsa "Actualizar app".
 
-No pisa contraseñas ni app_id.txt.
+No pisa contraseñas, app_id.txt ni ledger_bridge.jwt.
+
+Ledger Bridge (obligatorio en esta version)
+------------------------------------------
+Copia el JWT injector (cred ledge.txt) a:
+  la carpeta config junto al AutoHub.exe
+  (ejemplo: C:\\AutoHub\\config\\ledger_bridge.jwt)
+Una sola linea, sin comillas.
+
+Sage abierto en LYL + Conectar Sage (Always Allow una vez) + Automatico ON.
+El recuadro "Que esta pasando" muestra el avance en lenguaje sencillo.
+Solo facturas de 2025 en adelante entran a Sage.
 """
 
 CONFIG_IGNORE = {
     "connections.json",
     "config.json",
     "app_id.txt",
+    "ledger_bridge.jwt",
 }
 CONFIG_IGNORE_SUFFIXES = (".local.json",)
 
@@ -109,42 +121,36 @@ def main() -> None:
         str(BUNDLE / "scripts" / "sage_sdk") + ";scripts/sage_sdk",
         "--collect-all",
         "customtkinter",
-        "--collect-submodules",
-        "app",
         "--hidden-import",
         "src.paths",
-        "--hidden-import",
-        "src.connections",
-        "--hidden-import",
-        "src.db",
-        "--hidden-import",
-        "src.extract",
-        "--hidden-import",
-        "src.transform",
-        "--hidden-import",
-        "src.validate",
         "--hidden-import",
         "src.app_update",
         "--hidden-import",
         "src.sage_sdk_write",
         "--hidden-import",
-        "src.export_csv",
+        "src.extractor_inbox",
         "--hidden-import",
-        "src.csv_import",
+        "src.ledger_bridge",
         "--hidden-import",
-        "src.excel_automation",
+        "app.ops_app",
         "--hidden-import",
-        "src.sage_excel",
+        "app.theme",
         "--hidden-import",
-        "src.preview_utils",
+        "app.components",
         "--hidden-import",
-        "mysql.connector.locales.eng.client_error",
+        "app.dialogs",
         "--hidden-import",
-        "mysql.connector.plugins.mysql_native_password",
-        "--collect-submodules",
-        "mysql.connector.locales",
-        "--collect-submodules",
-        "mysql.connector.plugins",
+        "app.user_log",
+        "--exclude-module",
+        "pandas",
+        "--exclude-module",
+        "numpy",
+        "--exclude-module",
+        "mysql",
+        "--exclude-module",
+        "mysql.connector",
+        "--exclude-module",
+        "openpyxl",
         "--exclude-module",
         "CTkTable",
         "--exclude-module",
@@ -168,10 +174,8 @@ def main() -> None:
         "--exclude-module",
         "pytest",
         "--hidden-import",
-        "pandas.plotting",
-        "--hidden-import",
         "PIL._tkinter_finder",
-        str(ROOT / "app" / "main.py"),
+        str(ROOT / "app" / "ops_app.py"),
     ]
     icon = ROOT / "assets" / "autohub.ico"
     if icon.exists():
@@ -200,6 +204,13 @@ def main() -> None:
     update_zip = ROOT / "dist" / "AutoHub-update.zip"
     shutil.copy2(zip_path, update_zip)
 
+    hub_extrac = ROOT.parent
+    if hub_extrac.is_dir():
+        shutil.copy2(zip_path, hub_extrac / ZIP_NAME)
+        shutil.copy2(update_zip, hub_extrac / "AutoHub-update.zip")
+        print("ZIP en Hub + Extrac:", hub_extrac / ZIP_NAME)
+        print("Update ZIP:", hub_extrac / "AutoHub-update.zip")
+
     desktop = Path.home() / "Desktop"
     if not desktop.is_dir():
         desktop = Path.home() / "OneDrive" / "Desktop"
@@ -207,10 +218,9 @@ def main() -> None:
         shutil.copy2(zip_path, desktop / ZIP_NAME)
         shutil.copy2(update_zip, desktop / "AutoHub-update.zip")
         print("ZIP en Escritorio:", desktop / ZIP_NAME)
-        print("Update ZIP:", desktop / "AutoHub-update.zip")
-    print("ZIP:", zip_path)
+    print("ZIP dist:", zip_path)
     print("Carpeta:", DIST)
-    print("Pasa AutoHub-AnyDesk.zip por AnyDesk y extrae a C:\\AutoHub")
+    print("Pasa AutoHub-update.zip por AnyDesk a la PC de Sage")
 
 
 if __name__ == "__main__":

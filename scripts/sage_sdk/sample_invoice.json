@@ -1,24 +1,24 @@
 [
   {
-    "sentAt": "2026-08-21T21:47:27Z",
+    "sentAt": "2026-09-05T15:42:15Z",
     "record": {
-      "factura_id": "000002:001:FAC:C0003294",
-      "numero_factura": "FE01200000907198-1-516233-7400002026082100000032942000110000132949",
-      "fecha_emision": "2026-08-21",
-      "subtotal": 36.64,
-      "itbms_factura": 2.56,
-      "total_factura": 39.2,
-      "cliente_codigo": "7-704-500",
-      "cliente_nombre": "CONSTRUCTORA SATURNO Y ASOCIADOS, S.A.",
-      "ruc": "7-704-500",
+      "factura_id": "",
+      "numero_factura": "",
+      "fecha_emision": "",
+      "subtotal": 0.0,
+      "itbms_factura": 0.0,
+      "total_factura": 0.0,
+      "cliente_codigo": "",
+      "cliente_nombre": "",
+      "ruc": "CF",
       "linea": 1,
-      "descripcion": "SIKA GROUT 212 DE 30KG",
+      "descripcion": "Artículo",
       "cantidad": 1.0,
-      "precio_unitario": 36.64,
+      "precio_unitario": 0.0,
       "tasa_itbms": 0.07,
-      "total_linea": 36.64,
-      "sucursal_codigo": "02",
-      "sucursal": "CORONADO"
+      "total_linea": 0.0,
+      "sucursal_codigo": "",
+      "sucursal": "SIN SUCURSAL"
     }
   }
 ]
