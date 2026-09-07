@@ -40,6 +40,7 @@ def seed_runtime_files() -> None:
     (dest_root / "data").mkdir(parents=True, exist_ok=True)
     (dest_root / "state").mkdir(parents=True, exist_ok=True)
     (dest_root / "output").mkdir(parents=True, exist_ok=True)
+    (dest_root / "logs").mkdir(parents=True, exist_ok=True)
     for rel in ("scripts/sage_sdk", "config", "assets"):
         src = src_root / rel
         if not src.exists() or not src.is_dir():

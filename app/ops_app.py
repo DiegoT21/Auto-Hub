@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import threading
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -23,10 +24,12 @@ if str(ROOT) not in sys.path:
 from app import theme
 from app.components import btn, glass_card
 from app.dialogs import ask_confirm, show_error, show_info
-from app.user_log import friendly_log
+from app.user_log import classify
 from src.app_update import restart_autohub, run_update
 from src.ledger_bridge import base_url, is_configured
 from src.sage_sdk_write import TEST_COMPANY, authorize_sage_access
+from src.session_log import append as append_session_log
+from src.session_log import open_folder as open_logs_folder
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -58,14 +61,22 @@ class AutoHubApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Auto-Hub")
-        self.geometry("980x640")
-        self.minsize(860, 540)
+        self.geometry("1020x680")
+        self.minsize(900, 580)
         self.configure(fg_color=theme.BG_DARK)
 
         self.config = _load_config()
         self._auto_on = False
         self._auto_busy = False
-        self._log_buffer: list[str] = []
+        self._idle_idx = 0
+        self._log_lock = threading.Lock()
+        self._ev_q: deque[tuple[str, str]] = deque(maxlen=400)
+        self._n_ok = 0
+        self._n_err = 0
+        self._n_skip = 0
+        self._ok_lines: deque[str] = deque(maxlen=12)
+        self._err_lines: deque[str] = deque(maxlen=12)
+        self._current = ""
 
         if LOGO_ICO.exists():
             try:
@@ -77,6 +88,7 @@ class AutoHubApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
         self._build_sidebar()
         self._build_main()
+        self.after(150, self._flush_logs)
         self._log("Sistema listo")
         self._refresh_status()
 
@@ -126,6 +138,19 @@ class AutoHubApp(ctk.CTk):
             command=self.on_update_app,
         ).pack(fill="x", padx=8, pady=1)
 
+        ctk.CTkButton(
+            sidebar,
+            text="  Ver logs",
+            anchor="w",
+            height=32,
+            corner_radius=theme.BENTO_RADIUS_SM,
+            fg_color="transparent",
+            hover_color=theme.GLASS_BG_HOVER,
+            text_color=theme.TEXT_SECONDARY,
+            font=theme.FONT_BODY,
+            command=self.on_open_logs,
+        ).pack(fill="x", padx=8, pady=1)
+
         ctk.CTkLabel(
             sidebar,
             text="LYL 2025-2026",
@@ -137,7 +162,7 @@ class AutoHubApp(ctk.CTk):
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.grid(row=0, column=1, sticky="nsew", padx=12, pady=12)
         main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(2, weight=1)
+        main.grid_rowconfigure(3, weight=1)
 
         self.status_label = ctk.CTkLabel(
             main,
@@ -173,40 +198,101 @@ class AutoHubApp(ctk.CTk):
             command=self.on_toggle_auto,
         )
         self.auto_btn.pack(side="left", padx=(8, 0))
-        btn(row, text="Limpiar log", variant="ghost", width=110, height=theme.BTN_HEIGHT_LG, command=self._clear_log).pack(
+        btn(row, text="Limpiar", variant="ghost", width=90, height=theme.BTN_HEIGHT_LG, command=self._clear_log).pack(
             side="right"
         )
 
         ctk.CTkLabel(
             inner,
-            text="Abre Sage en LYL 2025-2026. Conectar Sage (Always Allow una vez). Automatico ON pide facturas a G Core. Solo 2025 en adelante entran a Sage; las viejas se marcan en la nube y no se cargan.",
+            text="Sage en LYL 2025-2026. Conectar Sage una vez. Automatico ON. Solo desde el 3 sep 2026 entran a Sage. Arriba ves si consulta. A la izquierda las que si cargaron. A la derecha los fallos. Las viejas solo suman en Omitidas.",
             font=theme.FONT_SMALL,
             text_color=theme.TEXT_SECONDARY,
-            wraplength=720,
+            wraplength=740,
             justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
-        log_shell = glass_card(main)
-        log_shell.grid(row=2, column=0, sticky="nsew")
-        log_shell.grid_columnconfigure(0, weight=1)
-        log_shell.grid_rowconfigure(1, weight=1)
-        head = ctk.CTkFrame(log_shell, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", padx=theme.BENTO_PAD, pady=(theme.BENTO_PAD, 6))
+        now = glass_card(main)
+        now.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        now_in = ctk.CTkFrame(now, fg_color="transparent")
+        now_in.pack(fill="x", padx=theme.BENTO_PAD, pady=theme.BENTO_PAD)
         ctk.CTkLabel(
-            head,
-            text="Que esta pasando",
+            now_in,
+            text="Ahora",
+            font=theme.FONT_SMALL,
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+        ).pack(anchor="w")
+        self.live_label = ctk.CTkLabel(
+            now_in,
+            text="En espera.",
             font=theme.FONT_HEADING,
-            text_color=theme.TEXT_PRIMARY,
-        ).pack(side="left")
-        self.log_text = ctk.CTkTextbox(
-            log_shell,
-            font=theme.FONT_LOG,
+            text_color=theme.ACCENT,
+            anchor="w",
+            wraplength=740,
+            justify="left",
+        )
+        self.live_label.pack(anchor="w", pady=(2, 2))
+        self.cycle_label = ctk.CTkLabel(
+            now_in,
+            text="Aun no consulta.",
+            font=theme.FONT_SMALL,
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+            wraplength=740,
+            justify="left",
+        )
+        self.cycle_label.pack(anchor="w", pady=(0, 8))
+        counts = ctk.CTkFrame(now_in, fg_color="transparent")
+        counts.pack(fill="x")
+        self.count_ok = self._count_chip(counts, "Cargadas", "0", theme.SUCCESS)
+        self.count_skip = self._count_chip(counts, "Omitidas", "0", theme.WARNING)
+        self.count_err = self._count_chip(counts, "Fallos", "0", theme.DANGER)
+        self.count_ok.pack(side="left")
+        self.count_skip.pack(side="left", padx=(8, 0))
+        self.count_err.pack(side="left", padx=(8, 0))
+
+        lists = ctk.CTkFrame(main, fg_color="transparent")
+        lists.grid(row=3, column=0, sticky="nsew")
+        lists.grid_columnconfigure(0, weight=1)
+        lists.grid_columnconfigure(1, weight=1)
+        lists.grid_rowconfigure(0, weight=1)
+
+        self.ok_card = self._list_card(lists, "Cargadas en Sage", theme.SUCCESS)
+        self.ok_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.err_card = self._list_card(lists, "Fallos", theme.DANGER)
+        self.err_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.ok_box = self.ok_card._box  # type: ignore[attr-defined]
+        self.err_box = self.err_card._box  # type: ignore[attr-defined]
+
+    def _count_chip(self, parent, title: str, value: str, color: str) -> ctk.CTkFrame:
+        chip = ctk.CTkFrame(parent, fg_color=theme.GLASS_INPUT, corner_radius=8, border_width=1, border_color=theme.GLASS_BORDER)
+        inner = ctk.CTkFrame(chip, fg_color="transparent")
+        inner.pack(padx=10, pady=6)
+        ctk.CTkLabel(inner, text=title, font=theme.FONT_SMALL, text_color=theme.TEXT_MUTED).pack(anchor="w")
+        lab = ctk.CTkLabel(inner, text=value, font=theme.FONT_TITLE, text_color=color)
+        lab.pack(anchor="w")
+        chip._value = lab  # type: ignore[attr-defined]
+        return chip
+
+    def _list_card(self, parent, title: str, accent: str) -> ctk.CTkFrame:
+        card = glass_card(parent)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(1, weight=1)
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=theme.BENTO_PAD, pady=(theme.BENTO_PAD, 4))
+        ctk.CTkLabel(head, text=title, font=theme.FONT_HEADING, text_color=accent, anchor="w").pack(side="left")
+        box = ctk.CTkTextbox(
+            card,
+            font=theme.FONT_SMALL,
             corner_radius=theme.BENTO_RADIUS_SM,
             wrap="word",
             fg_color=theme.GLASS_INPUT,
             border_color=theme.GLASS_BORDER,
         )
-        self.log_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        box.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        box.configure(state="disabled")
+        card._box = box  # type: ignore[attr-defined]
+        return card
 
     def _refresh_status(self) -> None:
         jwt_ok = is_configured(ROOT, self.config)
@@ -214,17 +300,121 @@ class AutoHubApp(ctk.CTk):
         self.status_label.configure(text="Sage: " + TEST_COMPANY + "  ·  " + cloud)
 
     def _clear_log(self) -> None:
-        self._log_buffer = []
-        self.log_text.delete("1.0", "end")
+        self._n_ok = 0
+        self._n_err = 0
+        self._n_skip = 0
+        self._ok_lines.clear()
+        self._err_lines.clear()
+        self._current = ""
+        self._set_live("En espera.")
+        self.cycle_label.configure(text="Aun no consulta.")
+        self._paint_counts()
+        self._paint_list(self.ok_box, self._ok_lines)
+        self._paint_list(self.err_box, self._err_lines)
+
+    def _set_live(self, text: str) -> None:
+        self.live_label.configure(text=text)
+
+    def _paint_counts(self) -> None:
+        self.count_ok._value.configure(text=str(self._n_ok))  # type: ignore[attr-defined]
+        self.count_skip._value.configure(text=str(self._n_skip))  # type: ignore[attr-defined]
+        self.count_err._value.configure(text=str(self._n_err))  # type: ignore[attr-defined]
+
+    def _paint_list(self, box: ctk.CTkTextbox, lines: deque[str]) -> None:
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        if lines:
+            box.insert("1.0", "\n".join(lines))
+        box.configure(state="disabled")
 
     def _log(self, msg: str) -> None:
-        shown = friendly_log(msg)
-        if shown is None:
+        self._log_from_thread(msg)
+
+    def _log_from_thread(self, msg: str) -> None:
+        ev = classify(msg)
+        if not ev:
             return
-        line = datetime.now().strftime("%H:%M:%S") + "  " + shown + "\n"
-        self._log_buffer.append(line)
-        self.log_text.insert("end", line)
-        self.log_text.see("end")
+        try:
+            append_session_log(ROOT, ev[0], ev[1])
+        except Exception:
+            pass
+        with self._log_lock:
+            self._ev_q.append(ev)
+
+    def _flush_logs(self) -> None:
+        try:
+            with self._log_lock:
+                batch = list(self._ev_q)
+                self._ev_q.clear()
+            if batch:
+                self._apply_events(batch)
+        finally:
+            try:
+                if self.winfo_exists():
+                    self.after(150, self._flush_logs)
+            except Exception:
+                pass
+
+    def _apply_events(self, batch: list[tuple[str, str]]) -> None:
+        events: list[tuple[str, str]] = []
+        pending_status: tuple[str, str] | None = None
+        for ev in batch:
+            if ev[0] == "status":
+                pending_status = ev
+                continue
+            if pending_status:
+                events.append(pending_status)
+                pending_status = None
+            events.append(ev)
+        if pending_status:
+            events.append(pending_status)
+
+        ok_changed = False
+        err_changed = False
+        counts_changed = False
+        stamp = datetime.now().strftime("%H:%M:%S")
+        live = ""
+        for kind, text in events:
+            if kind == "status":
+                live = text
+            elif kind == "load":
+                self._current = text
+                live = "Cargando " + text
+            elif kind == "ok":
+                line = stamp + "  " + (self._current or text)
+                if not self._ok_lines or self._ok_lines[-1] != line:
+                    self._ok_lines.append(line)
+                    self._n_ok += 1
+                    ok_changed = True
+                    counts_changed = True
+                live = "Cargada: " + (self._current or text)
+                self._current = ""
+            elif kind == "err":
+                line = stamp + "  " + text
+                if not self._err_lines or self._err_lines[-1] != line:
+                    self._err_lines.append(line)
+                    self._n_err += 1
+                    err_changed = True
+                    counts_changed = True
+                live = "Fallo: " + text
+                self._current = ""
+            elif kind == "skip":
+                n = 1
+                for part in text.split():
+                    if part.isdigit():
+                        n = int(part)
+                        break
+                self._n_skip += n
+                counts_changed = True
+                live = text
+        if live:
+            self._set_live(live)
+        if counts_changed:
+            self._paint_counts()
+        if ok_changed:
+            self._paint_list(self.ok_box, self._ok_lines)
+        if err_changed:
+            self._paint_list(self.err_box, self._err_lines)
 
     def on_toggle_auto(self) -> None:
         self._auto_on = not self._auto_on
@@ -236,51 +426,81 @@ class AutoHubApp(ctk.CTk):
             else:
                 self._log("Sin JWT de Ledger Bridge. Pon config/ledger_bridge.jwt")
             self._log("Sage debe quedar abierto en LYL.")
-            self._schedule_auto()
+            self._idle_idx = 0
+            self._schedule_auto(immediate=True)
         else:
             self._log("Modo automatico OFF")
 
-    def _schedule_auto(self) -> None:
-        if self._auto_on:
-            self.after(12000, self._auto_tick)
+    def _schedule_auto(self, immediate: bool = False) -> None:
+        if not self._auto_on:
+            return
+        delays = (12000, 20000, 30000, 45000)
+        delay = 400 if immediate else delays[min(self._idle_idx, len(delays) - 1)]
+        self.after(delay, self._auto_tick)
 
     def _auto_tick(self) -> None:
         if not self._auto_on:
             return
         if self._auto_busy:
-            self._schedule_auto()
             return
         self._auto_busy = True
 
         def worker() -> None:
+            import time
+
+            t0 = time.time()
             try:
                 from src.extractor_inbox import process_extractor_outbox
 
                 stats = process_extractor_outbox(
                     ROOT,
                     self.config,
-                    on_log=lambda msg: self.after(0, self._log, msg),
+                    on_log=self._log_from_thread,
                 )
-                self.after(0, self._on_auto_cycle, stats, "")
+                self.after(0, self._on_auto_cycle, stats, "", time.time() - t0)
             except Exception as exc:
-                self.after(0, self._on_auto_cycle, None, str(exc))
+                self.after(0, self._on_auto_cycle, None, str(exc), time.time() - t0)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_auto_cycle(self, stats: dict | None, error: str) -> None:
+    def _on_auto_cycle(self, stats: dict | None, error: str, elapsed: float = 0.0) -> None:
         self._auto_busy = False
         if error:
             self._log("ERROR automatico: " + error)
+            self._idle_idx = 0
         elif stats and (stats.get("sent") or stats.get("failed") or stats.get("skipped")):
-            self._log(
-                "Ciclo Extractor: enviadas="
-                + str(stats.get("sent", 0))
-                + " omitidas="
-                + str(stats.get("skipped", 0))
-                + " error="
-                + str(stats.get("failed", 0))
-            )
+            self._idle_idx = 0
+        else:
+            self._idle_idx = min(self._idle_idx + 1, 3)
+        self._set_cycle_summary(stats, error, elapsed)
         self._schedule_auto()
+
+    def _set_cycle_summary(self, stats: dict | None, error: str, elapsed: float) -> None:
+        hhmm = datetime.now().strftime("%H:%M")
+        sec = str(round(elapsed, 1)) + " s"
+        if error:
+            summary = "Ultima consulta " + hhmm + " · " + sec + " · error"
+        elif not stats or not (stats.get("sent") or stats.get("failed") or stats.get("skipped")):
+            summary = "Ultima consulta " + hhmm + " · " + sec + " · cola vacia"
+        else:
+            bits: list[str] = []
+            sent = int(stats.get("sent") or 0)
+            skipped = int(stats.get("skipped") or 0)
+            failed = int(stats.get("failed") or 0)
+            if sent:
+                bits.append(str(sent) + " cargadas")
+            if skipped:
+                bits.append(str(skipped) + " omitidas")
+            if failed:
+                bits.append(str(failed) + (" fallo" if failed == 1 else " fallos"))
+            summary = "Ultima consulta " + hhmm + " · " + sec + " · " + ", ".join(bits)
+        self.cycle_label.configure(text=summary)
+
+    def on_open_logs(self) -> None:
+        try:
+            open_logs_folder(ROOT)
+        except Exception as exc:
+            show_error(self, "Logs", str(exc))
 
     def on_authorize_sage(self) -> None:
         if not ask_confirm(
@@ -296,7 +516,7 @@ class AutoHubApp(ctk.CTk):
 
         def worker() -> None:
             try:
-                authorize_sage_access(ROOT, on_log=lambda msg: self.after(0, self._log, msg))
+                authorize_sage_access(ROOT, on_log=self._log_from_thread)
                 self.after(0, self._on_sage_done, True, "OK — Sage conectado.")
             except Exception as exc:
                 self.after(0, self._on_sage_done, False, str(exc))
@@ -321,11 +541,8 @@ class AutoHubApp(ctk.CTk):
         self._log("Actualizando Auto-Hub...")
 
         def worker() -> None:
-            def log(msg: str) -> None:
-                self.after(0, self._log, msg)
-
             try:
-                run_update(ROOT, on_log=log)
+                run_update(ROOT, on_log=self._log_from_thread)
                 self.after(0, self._on_update_done, True, "Actualizado. Reiniciando...")
             except Exception as exc:
                 self.after(0, self._on_update_done, False, str(exc))

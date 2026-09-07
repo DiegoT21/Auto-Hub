@@ -44,8 +44,10 @@ Copia el JWT injector (cred ledge.txt) a:
 Una sola linea, sin comillas.
 
 Sage abierto en LYL + Conectar Sage (Always Allow una vez) + Automatico ON.
-El recuadro "Que esta pasando" muestra el avance en lenguaje sencillo.
-Solo facturas de 2025 en adelante entran a Sage.
+La pantalla muestra tres recuadros: lo que esta haciendo ahora, las que cargo en Sage y los fallos.
+Las facturas viejas no llenan la lista: solo suman en Omitidas.
+El detalle del dia (y el dump de Sage si una factura fallo) esta en la carpeta logs junto al exe. Boton Ver logs.
+Solo facturas desde el 3 sep 2026 entran a Sage (mismo piso que el Extractor).
 """
 
 CONFIG_IGNORE = {
@@ -131,6 +133,8 @@ def main() -> None:
         "src.extractor_inbox",
         "--hidden-import",
         "src.ledger_bridge",
+        "--hidden-import",
+        "src.session_log",
         "--hidden-import",
         "app.ops_app",
         "--hidden-import",

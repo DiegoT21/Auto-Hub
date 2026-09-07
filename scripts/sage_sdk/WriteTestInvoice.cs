@@ -28,7 +28,7 @@ namespace AutoHub.SageInvoiceProbe
         // Cliente real de la empresa de prueba (AUTOHUB-TEST a veces no sirve para facturar)
         private const string TestCustomerId = "C SUAREZ TORRE 1";
         private const string DefaultSamplePath = "sample_invoice.json";
-        private const string ProbeVersion = "2026-08-19-always-allow";
+        private const string ProbeVersion = "2026-09-07-money-2dp";
         private static PeachtreeSession _session;
         private static Company _company;
 
@@ -273,8 +273,9 @@ namespace AutoHub.SageInvoiceProbe
 
                     var desc = GetString(rec, "descripcion") ?? ("Linea " + lineNo);
                     var qty = ParseDecimal(GetString(rec, "cantidad")) ?? 1m;
-                    var price = ParseDecimal(GetString(rec, "precio_unitario")) ?? 0m;
-                    var amount = ParseDecimal(GetString(rec, "total_linea")) ?? (qty * price);
+                    var price = Money(ParseDecimal(GetString(rec, "precio_unitario")) ?? 0m);
+                    // Sage exige centavos. El monto de linea es qty x precio, no el total_linea crudo de PsKloud.
+                    var amount = Money(qty * price);
 
                     TrySetStringProp(line, "Description", desc);
                     TrySetProp(line, "Quantity", qty);
@@ -904,6 +905,11 @@ namespace AutoHub.SageInvoiceProbe
             if (decimal.TryParse(s, NumberStyles.Any, CultureInfo.CurrentCulture, out d))
                 return d;
             return null;
+        }
+
+        private static decimal Money(decimal value)
+        {
+            return Math.Round(value, 2, MidpointRounding.AwayFromZero);
         }
 
         private static DateTime? ParseDate(string s)

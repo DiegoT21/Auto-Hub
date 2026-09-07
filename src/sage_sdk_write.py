@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 from datetime import date, datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Callable
 
@@ -255,23 +256,30 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
+def _money(value: Any) -> float:
+    raw = Decimal(str(value if value not in (None, "") else 0))
+    return float(raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def _coerce_row(rec: dict[str, Any]) -> dict[str, Any]:
+    qty = float(rec.get("cantidad") or 0)
+    price = _money(rec.get("precio_unitario") or 0)
     return {
         "factura_id": str(rec.get("factura_id") or ""),
         "numero_factura": str(rec.get("numero_factura") or ""),
         "fecha_emision": _as_iso_date(rec.get("fecha_emision")),
-        "subtotal": float(rec.get("subtotal") or 0),
-        "itbms_factura": float(rec.get("itbms_factura") or 0),
-        "total_factura": float(rec.get("total_factura") or 0),
+        "subtotal": _money(rec.get("subtotal") or 0),
+        "itbms_factura": _money(rec.get("itbms_factura") or 0),
+        "total_factura": _money(rec.get("total_factura") or 0),
         "cliente_codigo": str(rec.get("cliente_codigo") or ""),
         "cliente_nombre": str(rec.get("cliente_nombre") or ""),
         "ruc": str(rec.get("ruc") or "CF"),
         "linea": int(rec.get("linea") or 1),
         "descripcion": str(rec.get("descripcion") or ""),
-        "cantidad": float(rec.get("cantidad") or 0),
-        "precio_unitario": float(rec.get("precio_unitario") or 0),
+        "cantidad": qty,
+        "precio_unitario": price,
         "tasa_itbms": float(rec.get("tasa_itbms") or 0.07),
-        "total_linea": float(rec.get("total_linea") or 0),
+        "total_linea": _money(Decimal(str(qty)) * Decimal(str(price))),
         "sucursal_codigo": str(rec.get("sucursal_codigo") or "").strip(),
         "sucursal": sucursal_label(rec),
     }
@@ -516,6 +524,30 @@ def _parse_sage_ref(text: str) -> str:
     return ""
 
 
+def _invoice_label(rows: list[dict[str, Any]]) -> str:
+    rec = rows[0] if rows else {}
+    return str(rec.get("factura_id") or rec.get("numero_factura") or "factura").strip() or "factura"
+
+
+def _sage_error_hint(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("error") or "rounded" in lower or "current period" in lower or "unit price" in lower:
+            return stripped[:240]
+    return ""
+
+
+def _dump_sage_fail(root: Path, label: str, text: str, on_log: Callable[[str], None]) -> None:
+    try:
+        from src.session_log import write_sage_fail
+
+        path = write_sage_fail(root, label, text)
+        on_log("Dump Sage: " + str(path))
+    except Exception:
+        pass
+
+
 def _run_writer(
     root: Path,
     rows: list[dict[str, Any]],
@@ -541,110 +573,119 @@ def _run_writer(
                 + ("\nEnviada: " + sent_at if sent_at else "")
                 + "\n\nNo se creo otra para no duplicar. Buscala en Sales Invoices."
             )
-        json_path = write_outbox_json(sdk_dir / SAMPLE_NAME, rows)
+        json_path = write_outbox_json(
+            sdk_dir / ("sample_" + str(os.getpid()) + "_" + str(int(time.time() * 1000)) + ".json"),
+            rows,
+        )
         on_log("JSON escrito: " + json_path.name + " (" + str(len(rows)) + " lineas)")
 
-    api_dir = _find_api_dir()
-    if api_dir is None:
-        raise FileNotFoundError(
-            "No esta el Sage 50 SDK en esta PC.\n"
-            "Auto-Hub tiene que correr en la maquina de Sage (AnyDesk),\n"
-            "o copia sample_invoice.json a C:\\Temp\\sage_sdk y usa ABRIR_WRITE_INVOICE.bat"
-        )
-
-    _read_app_id(sdk_dir)
-    host = sdk_dir / "RunSageHost.ps1"
-    if not host.exists():
-        raise FileNotFoundError("Falta RunSageHost.ps1 en " + str(sdk_dir))
-
-    on_log("Conectando con Sage 50...")
-    on_log("Empresa: " + TEST_COMPANY)
-    cust_id, cust_name = _customer_from_rows(root, rows)
-    if auth_only:
-        on_log("Modo autorizar: espera Always Allow en Sage (hasta 3 min).")
-    else:
-        origen = ""
-        if rows:
-            origen = str(rows[0].get("cliente_nombre") or rows[0].get("cliente_codigo") or "")
-        on_log("Cliente factura: " + (cust_id or "(sin codigo)") + " | " + (cust_name or "(sin nombre)"))
-        if origen and cust_name and origen.strip().upper() != cust_name.strip().upper():
-            on_log("  Mapeado desde PsKloud: " + origen)
-
-    cmd = [
-        str(_powershell32()),
-        "-NoProfile",
-        "-WindowStyle",
-        "Hidden",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(host),
-        "-Company",
-        TEST_COMPANY,
-        "-AppIdFile",
-        str(_app_id_path(sdk_dir)),
-    ]
-    if auth_only:
-        cmd.append("-AuthOnly")
-    else:
-        cmd.extend(
-            [
-                "-SampleJson",
-                str(json_path),
-                "-CustomerId",
-                cust_id,
-                "-CustomerName",
-                cust_name,
-            ]
-        )
-
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(sdk_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        **_hidden_kw(),
-    )
-    # Pending puede tardar hasta ~3 min mientras el usuario da Always Allow.
-    timeout_sec = 200
     try:
-        out, err = proc.communicate(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            out, err = proc.communicate(timeout=10)
-        except Exception:
-            out, err = "", ""
-        _ensure_writer_dead()
-        text = (out or "") + (err or "")
-        for line in text.splitlines():
-            on_log(line)
-        raise RuntimeError(
-            "Se agoto el tiempo esperando Always Allow.\n"
-            "1) Abre Sage en LYL CONSTRUCTIONS SUPPLY INC 2025-2026\n"
-            "2) Pulsa 'Conectar Sage' otra vez\n"
-            "3) En el dialogo elige ALWAYS ALLOW (no solo Allow)\n"
-            "Despues de eso, Enviar a Sage ya no deberia pedir permiso."
-        )
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            _ensure_writer_dead()
+        api_dir = _find_api_dir()
+        if api_dir is None:
+            raise FileNotFoundError(
+                "No esta el Sage 50 SDK en esta PC.\n"
+                "Auto-Hub tiene que correr en la maquina de Sage (AnyDesk),\n"
+                "o copia sample_invoice.json a C:\\Temp\\sage_sdk y usa ABRIR_WRITE_INVOICE.bat"
+            )
 
-    text = (out or "") + (err or "")
-    for line in text.splitlines():
-        on_log(line)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            ("Conectar Sage" if auth_only else "Enviar a Sage")
-            + " salio con codigo "
-            + str(proc.returncode)
+        _read_app_id(sdk_dir)
+        host = sdk_dir / "RunSageHost.ps1"
+        if not host.exists():
+            raise FileNotFoundError("Falta RunSageHost.ps1 en " + str(sdk_dir))
+
+        on_log("Conectando con Sage 50...")
+        on_log("Empresa: " + TEST_COMPANY)
+        cust_id, cust_name = _customer_from_rows(root, rows)
+        if auth_only:
+            on_log("Modo autorizar: espera Always Allow en Sage (hasta 3 min).")
+        else:
+            origen = ""
+            if rows:
+                origen = str(rows[0].get("cliente_nombre") or rows[0].get("cliente_codigo") or "")
+            on_log("Cliente factura: " + (cust_id or "(sin codigo)") + " | " + (cust_name or "(sin nombre)"))
+            if origen and cust_name and origen.strip().upper() != cust_name.strip().upper():
+                on_log("  Mapeado desde PsKloud: " + origen)
+
+        cmd = [
+            str(_powershell32()),
+            "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(host),
+            "-Company",
+            TEST_COMPANY,
+            "-AppIdFile",
+            str(_app_id_path(sdk_dir)),
+        ]
+        if auth_only:
+            cmd.append("-AuthOnly")
+        else:
+            cmd.extend(
+                [
+                    "-SampleJson",
+                    str(json_path),
+                    "-CustomerId",
+                    cust_id,
+                    "-CustomerName",
+                    cust_name,
+                ]
+            )
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(sdk_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **_hidden_kw(),
         )
-    if not auth_only:
-        sage_ref = _parse_sage_ref(text)
-        sucursal = str((rows[0] or {}).get("sucursal") or "")
-        record_sent_invoice(root, rows, sage_ref=sage_ref or "AH", sucursal=sucursal)
-        if sage_ref:
-            on_log("Registrada para no duplicar: " + sage_ref)
-    return proc.returncode
+        timeout_sec = 200
+        label = "auth" if auth_only else _invoice_label(rows)
+        try:
+            out, err = proc.communicate(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                out, err = proc.communicate(timeout=10)
+            except Exception:
+                out, err = "", ""
+            _ensure_writer_dead()
+            text = (out or "") + (err or "")
+            _dump_sage_fail(root, label, text, on_log)
+            raise RuntimeError(
+                "Se agoto el tiempo esperando Always Allow.\n"
+                "1) Abre Sage en LYL CONSTRUCTIONS SUPPLY INC 2025-2026\n"
+                "2) Pulsa 'Conectar Sage' otra vez\n"
+                "3) En el dialogo elige ALWAYS ALLOW (no solo Allow)\n"
+                "Despues de eso, Enviar a Sage ya no deberia pedir permiso."
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                _ensure_writer_dead()
+
+        text = (out or "") + (err or "")
+        if proc.returncode != 0:
+            _dump_sage_fail(root, label, text, on_log)
+            hint = _sage_error_hint(text)
+            raise RuntimeError(
+                ("Conectar Sage" if auth_only else "Enviar a Sage")
+                + " salio con codigo "
+                + str(proc.returncode)
+                + ((" " + hint) if hint else "")
+            )
+        if not auth_only:
+            sage_ref = _parse_sage_ref(text)
+            sucursal = str((rows[0] or {}).get("sucursal") or "")
+            record_sent_invoice(root, rows, sage_ref=sage_ref or "AH", sucursal=sucursal)
+            on_log("OK - factura guardada")
+        return proc.returncode
+    finally:
+        if json_path is not None:
+            try:
+                json_path.unlink(missing_ok=True)
+            except OSError:
+                pass

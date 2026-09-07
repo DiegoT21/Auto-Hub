@@ -19,6 +19,10 @@ from src.sage_sdk_write import (
 )
 
 DEFAULT_BASE_URL = "https://bt41axxide.execute-api.us-east-1.amazonaws.com"
+# Mismo piso que el Extractor. Sage 2025-2026 esta en periodo sep 2026:
+# enero 2025 entra al corte "2025+" pero Sage lo rechaza (periodo cerrado)
+# y esas fallas se reintentan, tapando las facturas de esta semana.
+MIN_SAGE_DATE = "2026-09-03"
 _CTX = ssl.create_default_context()
 
 
@@ -60,7 +64,7 @@ def _request(
     url: str,
     token: str,
     body: dict[str, Any] | None = None,
-    timeout: int = 30,
+    timeout: int = 20,
 ) -> tuple[int, Any, str]:
     data = None
     headers = {
@@ -188,9 +192,19 @@ def invoice_date(rows: list[dict[str, Any]]) -> str:
     return str(rows[0].get("fecha_emision") or "")[:10]
 
 
-def too_old_for_company(rows: list[dict[str, Any]], min_fecha: str = "2025-01-01") -> bool:
+def min_invoice_date(config: dict[str, Any] | None = None) -> str:
+    raw = ""
+    if config:
+        raw = str(ledger_config(config).get("min_fecha") or "").strip()
+    env = str(os.environ.get("LEDGER_BRIDGE_MIN_FECHA") or "").strip()
+    stamp = (raw or env or MIN_SAGE_DATE)[:10]
+    return stamp if len(stamp) >= 10 else MIN_SAGE_DATE
+
+
+def too_old_for_company(rows: list[dict[str, Any]], min_fecha: str | None = None) -> bool:
+    floor = (min_fecha or MIN_SAGE_DATE)[:10]
     stamp = invoice_date(rows)
-    return bool(stamp) and stamp < min_fecha
+    return bool(stamp) and stamp < floor
 
 
 def invoice_ready(rows: list[dict[str, Any]]) -> bool:
@@ -365,12 +379,13 @@ def process_ledger_pending(
 ) -> dict[str, int]:
     stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0}
     if not is_configured(root, config):
+        on_log("Sin JWT de Ledger Bridge. Pon config/ledger_bridge.jwt")
         return stats
     if not sage_ui_running():
+        on_log("Automatico: Sage no esta abierto. Deja LYL 2025-2026 abierta.")
         return stats
 
     jobs, raw = fetch_pending(root, config)
-    dump_path = dump_pending(root, raw)
     parsed_preview: Any = None
     if raw.strip():
         try:
@@ -383,17 +398,22 @@ def process_ledger_pending(
             inv = parsed_preview.get("invoices")
             cnt = parsed_preview.get("count")
             empty = inv == [] or cnt == 0
-        if raw and raw.strip() not in ("", "[]", "{}", "null") and not empty:
-            on_log("Ledger Bridge pending sin facturas usables. " + payload_preview(parsed_preview))
-            on_log("JSON: " + str(dump_path))
+        if empty or not raw or raw.strip() in ("", "[]", "{}", "null"):
+            on_log("Nube sin pendientes. Sigo esperando.")
+            return stats
+        dump_path = dump_pending(root, raw)
+        on_log("Ledger Bridge pending sin facturas usables. " + payload_preview(parsed_preview))
+        on_log("JSON: " + str(dump_path))
         return stats
 
+    dump_path = dump_pending(root, raw)
     on_log("Ledger Bridge: " + str(len(jobs)) + " lote(s) pendientes")
     on_log("JSON pending: " + str(dump_path))
     done_items: list[dict[str, str]] = []
-    old_count = sum(1 for job in jobs if too_old_for_company(job.get("rows") or []))
+    floor = min_invoice_date(config)
+    old_count = sum(1 for job in jobs if too_old_for_company(job.get("rows") or [], floor))
     if old_count:
-        on_log("Factura vieja: " + str(old_count) + " de anos atras. No se cargan a Sage 2025-2026.")
+        on_log("Factura vieja: " + str(old_count) + " anteriores a " + floor + ". No se cargan a Sage.")
 
     for job in jobs:
         rows = job["rows"]
@@ -407,7 +427,7 @@ def process_ledger_pending(
             if item.get("branchId") and item.get("facturaId"):
                 done_items.append(item)
             continue
-        if too_old_for_company(rows):
+        if too_old_for_company(rows, floor):
             stats["skipped"] += 1
             stats["files"] += 1
             if item.get("branchId") and item.get("facturaId"):

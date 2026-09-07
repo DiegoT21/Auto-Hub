@@ -84,6 +84,7 @@ def process_extractor_outbox(
 ) -> dict[str, int]:
     stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0}
     folder = outbox_dir(config, root)
+    on_log("Automatico: revisando Sage y la nube...")
     if not sage_ui_running():
         on_log("Automatico: Sage no esta abierto. Deja LYL 2025-2026 abierta.")
         return stats
@@ -91,6 +92,7 @@ def process_extractor_outbox(
     from src.ledger_bridge import is_configured, process_ledger_pending
 
     if is_configured(root, config):
+        on_log("Consultando Ledger Bridge...")
         cloud = process_ledger_pending(root, config, on_log)
         for key in stats:
             stats[key] += int(cloud.get(key) or 0)

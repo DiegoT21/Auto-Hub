@@ -1,9 +1,9 @@
-"""Convierte mensajes tecnicos del SDK/nube a frases para quien usa Auto-Hub."""
+"""Convierte mensajes tecnicos a eventos cortos para la UI (status / ok / err / skip)."""
 from __future__ import annotations
 
 import re
 
-# Lineas internas que no ayudan al usuario.
+# Lineas internas: no van a la pantalla.
 _SKIP_PREFIXES = (
     "carpeta sdk:",
     "json escrito:",
@@ -14,6 +14,7 @@ _SKIP_PREFIXES = (
     "companias registradas",
     "empresa abierta via sdk",
     "empresa:",
+    "empresa objetivo:",
     "modo: escritura",
     "modo: autorizar",
     "auto-hub - envio",
@@ -29,6 +30,46 @@ _SKIP_PREFIXES = (
     "sample json:",
     "preview:",
     "assemblyinitializer",
+    "factura origen:",
+    "factura de pskloud:",
+    "fecha en sage:",
+    "fecha de la factura:",
+    "sucursal:",
+    "cliente pskloud:",
+    "cliente en pskloud:",
+    "cliente sage:",
+    "cliente en sage:",
+    "clientes en sage:",
+    "referencenumber sage:",
+    "numero en sage:",
+    "match por",
+    "creando salesinvoice",
+    "cliente asignado",
+    "date/transactiondate",
+    "nota sage:",
+    "guardando la factura",
+    "guardando factura",
+    "linea ",
+    "  reference:",
+    "registrada para no duplicar:",
+    "pidiendo permiso",
+    "solicitando acceso",
+    "already granted",
+    "autorizacion: granted",
+    "ok - acceso granted",
+    "permiso de sage",
+    "sage ya habia",
+    "ya no deberia pedir",
+    "use la misma cuenta",
+    "gl copiado",
+    "guardando el cliente nuevo",
+    "guardando cliente nuevo",
+    "este cliente no estaba",
+    "aviso apellido",
+    "busca invoice no",
+    "verificalo en sage",
+    "revisa en sage",
+    "mapeado desde pskloud",
 )
 
 _SKIP_CONTAINS = (
@@ -38,7 +79,11 @@ _SKIP_CONTAINS = (
 )
 
 
-def friendly_log(msg: str) -> str | None:
+def classify(msg: str) -> tuple[str, str] | None:
+    """Devuelve (kind, texto) o None para tirar el mensaje.
+
+    kind: status | load | ok | err | skip
+    """
     text = (msg or "").strip()
     if not text:
         return None
@@ -48,172 +93,120 @@ def friendly_log(msg: str) -> str | None:
         return None
     if any(s in lower for s in _SKIP_CONTAINS):
         return None
-    if text.startswith("  - ") or (text.startswith("  ") and "cliente nuevo" not in lower and "match" not in lower and "guardando" not in lower and "gl copiado" not in lower):
-        if "linea " in lower and ("qty=" in lower or "price=" in lower):
-            return _line_item(text)
+    if text.startswith("  - ") or text.startswith("- LYL"):
+        return None
+    if text.startswith("  ") and "error" not in lower:
         return None
 
     mapped = _map(text, lower)
-    return mapped if mapped else text
+    if not mapped:
+        return None
+    shown, kind = mapped
+    return kind, shown
 
 
-def _line_item(text: str) -> str:
-    m = re.search(r"Linea\s+(\d+).*?\|\s*(.+)$", text, re.I)
-    if m:
-        return "Linea " + m.group(1) + ": " + m.group(2).strip()
-    return None
+def friendly_log(msg: str) -> str | None:
+    ev = classify(msg)
+    return ev[1] if ev else None
 
 
-def _map(text: str, lower: str) -> str | None:
+def _map(text: str, lower: str) -> tuple[str, str] | None:
     if lower.startswith("[ok]"):
         rest = text.split("]", 1)[-1].strip()
         if "sage conectado" in lower:
-            return "Sage esta listo."
-        return rest
+            return "Sage esta listo.", "status"
+        return rest, "status"
     if lower.startswith("[err]") or lower.startswith("[...]"):
-        return text.split("]", 1)[-1].strip()
+        return text.split("]", 1)[-1].strip(), "err"
 
     if "modo automatico on" in lower:
-        return "Modo automatico encendido. Voy a buscar facturas nuevas."
+        return "Automatico ON. Buscando facturas.", "status"
     if "modo automatico off" in lower:
-        return "Modo automatico apagado."
+        return "Automatico OFF.", "status"
+    if "revisando sage y la nube" in lower:
+        return "Consultando Sage y G Core...", "status"
+    if "consultando ledger bridge" in lower:
+        return "Consultando G Core...", "status"
     if "ledger bridge:" in lower and "lote" in lower:
         n = re.search(r"(\d+)", text)
         cuantas = n.group(1) if n else ""
-        return "Hay " + cuantas + " factura(s) esperando para entrar a Sage."
+        return "Hay " + cuantas + " factura(s) en cola.", "status"
+    if "nube sin pendientes" in lower:
+        return "Cola vacia. Esperando facturas nuevas.", "status"
     if "ledger bridge:" in lower and "http" in lower:
-        return "Conectado a la nube (G Core)."
+        return "Conectado a G Core.", "status"
     if "sin jwt" in lower:
-        return "Falta la credencial de G Core. Hay que copiar el archivo de la clave en la carpeta config."
+        return "Falta la clave de G Core en config.", "err"
     if "sage debe quedar abierto" in lower or "deja abierta lyl" in lower:
-        return "Deja Sage abierto en la empresa LYL 2025-2026."
+        return "Deja Sage abierto en LYL 2025-2026.", "status"
     if "sage no esta abierto" in lower:
-        return "Sage no esta abierto. Abre la empresa LYL para poder cargar facturas."
-    if "sage esta abierto: bien" in lower:
-        return "Sage esta abierto. Todo bien."
+        return "Sage no esta abierto. Abre LYL 2025-2026.", "err"
     if lower.startswith("enviando "):
         rest = text[len("Enviando ") :].strip()
         if "|" in rest:
             num, cliente = [p.strip() for p in rest.split("|", 1)]
-            if cliente:
-                return "Cargando en Sage la factura " + num + " de " + cliente + "."
-            return "Cargando en Sage la factura " + num + "."
-        return "Cargando una factura en Sage."
+            label = (num.split(":")[-1] if ":" in num else num) + " · " + cliente
+            return label, "load"
+        return rest, "load"
     if "ya enviada" in lower:
-        return "Esa factura ya estaba en Sage. No se volvio a cargar."
+        return "Ya estaba en Sage. No se duplica.", "skip"
     if "lote incompleto" in lower:
-        return "Llego un dato incompleto (sin cliente o sin numero). No se carga a Sage."
+        return "Dato incompleto (sin cliente o numero).", "err"
     if "factura vieja" in lower:
         n = re.search(r"(\d+)", text)
-        if n and "anos atras" in lower:
-            return n.group(1) + " factura(s) viejas. No las cargo en Sage; las marco en la nube."
-        return "Esa factura es de anos atras. No la cargo en Sage 2025-2026; la marco como vista en la nube."
+        cuantas = n.group(1) if n else "1"
+        return cuantas + " vieja(s) marcadas en la nube.", "skip"
     if "pending sin facturas usables" in lower:
-        return "La nube mando un dato que no se puede usar como factura."
+        return "La nube mando un dato inutilizable.", "err"
     if "ledger bridge ack ok" in lower:
         conf = re.search(r"confirmed=(\d+)", lower)
         n = conf.group(1) if conf else "?"
-        return "La nube confirmo " + n + " factura(s). Si es 0, siguen en cola; si es 25, en el siguiente ciclo deberian venir otras."
-    if "ledger bridge ack fallo" in lower and "confirmed=0" in lower:
-        return "La nube recibio el aviso pero confirmo 0. Esas facturas siguen reservadas."
-    if lower.startswith("error automatico"):
-        return "Algo fallo al revisar facturas. " + _soften_error(text.split(":", 1)[-1])
-    if lower.startswith("extractor lote:"):
-        return "Encontre un lote de facturas en esta computadora."
-        detail = text.split(":", 1)[-1].strip()
-        return "No se pudo cargar esa factura. " + _soften_error(detail)
-    if "ciclo extractor:" in lower or "ciclo " in lower and "enviadas=" in lower:
-        sent = re.search(r"enviadas=(\d+)", lower)
-        skip = re.search(r"omitidas=(\d+)", lower)
-        fail = re.search(r"error=(\d+)", lower)
-        return (
-            "Resumen: "
-            + (sent.group(1) if sent else "0")
-            + " cargada(s), "
-            + (skip.group(1) if skip else "0")
-            + " omitida(s), "
-            + (fail.group(1) if fail else "0")
-            + " con error."
-        )
-    if "cliente no existe" in lower or "se crea:" in lower:
-        return "Este cliente no estaba en Sage. Lo estoy creando ahora."
-    if "alta nueva por auto-hub" in lower or "cliente nuevo" in lower and "primera factura" in lower:
-        return "Primera factura de un cliente nuevo: en Sage quedara marcado CLIENTE NUEVO."
-    if "guardando cliente nuevo" in lower:
-        return "Guardando el cliente nuevo en Sage."
-    if "gl copiado" in lower:
-        return "Use la misma cuenta de ventas que los clientes de contado."
-    if "ok - factura guardada" in lower:
-        return "Listo: la factura ya esta en Sage."
-    if "guardando factura" in lower:
-        return "Guardando la factura en Sage..."
-    if "conectando con sage" in lower:
-        return "Hablando con Sage..."
-    if "solicitando acceso" in lower:
-        return "Pidiendo permiso a Sage..."
-    if "already granted" in lower or "autorizacion: granted" in lower:
-        return "Sage ya habia dado permiso. No hay que hacer nada."
-    if "ok - acceso granted" in lower:
-        return "Permiso de Sage confirmado."
-    if "always allow" in lower and "accion en sage" in lower:
-        return "En Sage, elige Always Allow una sola vez."
-    if "factura origen:" in lower:
-        num = text.split(":", 1)[-1].strip()
-        return "Factura de PsKloud: " + num
-    if "fecha en sage:" in lower:
-        return "Fecha de la factura: " + text.split(":", 1)[-1].strip().split("(")[0].strip()
-    if lower.startswith("sucursal:"):
-        return "Sucursal: " + text.split(":", 1)[-1].strip()
-    if "cliente pskloud:" in lower:
-        rest = text.split(":", 1)[-1].strip()
-        if rest in ("|", "", "|"):
-            return None
-        return "Cliente en PsKloud: " + rest
-    if "cliente factura:" in lower:
-        rest = text.split(":", 1)[-1].strip()
-        if "sin codigo" in rest.lower() and "sin nombre" in rest.lower():
-            return "Esta factura no trae cliente. No se puede cargar."
-        return "Cliente: " + rest
-    if "cliente sage:" in lower:
-        return "Cliente en Sage: " + text.split(":", 1)[-1].strip()
-    if "referencenumber sage:" in lower or lower.startswith("  reference:"):
-        return "Numero en Sage: " + text.split(":", 1)[-1].strip()
-    if "no hay match" in lower:
-        return "Ese cliente no aparecia en Sage."
-    if "no se encontro el cliente" in lower or "factura sin cliente" in lower:
-        return "No hay cliente para esta factura. Si trae nombre, Auto-Hub lo crea; si viene vacio, se omite."
-    if "no se pudo crear el cliente" in lower:
-        return "Sage no dejo crear el cliente. Revisa el nombre o el codigo."
-    if "enviar a sage salio con codigo" in lower:
-        return "Sage no pudo guardar esta factura. " + _soften_error(text)
-    if "error creando cliente" in lower:
-        return "No se pudo crear el cliente en Sage."
-    if "verificalo en sage" in lower:
-        return "Revisa en Sage: Ventas → Facturas. Busca un numero que empiece con AH."
-    if "busca invoice no" in lower:
+        return "Nube confirmo " + n + ".", "status"
+    if "ledger bridge ack fallo" in lower:
+        return "No se pudo marcar en la nube.", "err"
+    if lower.startswith("error automatico") or lower.startswith("error auto "):
+        return _short_err(text), "err"
+    if "ciclo extractor:" in lower or ("ciclo " in lower and "enviadas=" in lower):
         return None
-    if "mapeado desde pskloud" in lower:
-        return "Se uso el cliente de Sage equivalente: " + text.split(":", 1)[-1].strip()
-    if "factura ya enviada a sage" in lower:
-        return "Esa factura ya se habia enviado. " + text.split(":", 1)[-1].strip()
+    if "ok - factura guardada" in lower or "listo: la factura ya esta" in lower:
+        return "Cargada en Sage.", "ok"
+    if "conectando con sage" in lower or "hablando con sage" in lower:
+        return "Hablando con Sage...", "status"
+    if "always allow" in lower and "accion en sage" in lower:
+        return "En Sage, elige Always Allow una vez.", "status"
+    if "no se pudo crear el cliente" in lower or "error creando cliente" in lower:
+        return "Sage no dejo crear el cliente.", "err"
+    if "enviar a sage salio con codigo" in lower or "conectar sage salio" in lower or "sage no pudo guardar" in lower:
+        return _short_err(text), "err"
+    if "se agoto el tiempo" in lower:
+        return "Sage no contesto. Revisa Always Allow.", "err"
+    if "dump sage:" in lower:
+        return "Detalle de Sage guardado. Ver logs.", "status"
     if "sistema listo" in lower:
-        return "Auto-Hub listo."
-    if "conexion activa" in lower:
-        return "Base de datos: " + text.split(":", 1)[-1].strip()
+        return "Auto-Hub listo.", "status"
+    if "ok — sage conectado" in lower or "ok - sage conectado" in lower:
+        return "Sage conectado.", "status"
+    if "actualizando auto-hub" in lower:
+        return "Actualizando Auto-Hub...", "status"
+    if "actualizado. reiniciando" in lower:
+        return "Actualizado. Reiniciando...", "status"
     return None
 
 
-def _soften_error(detail: str) -> str:
-    d = detail.strip()
-    lower = d.lower()
-    if "codigo 3" in lower:
-        return "Falto el cliente o el dato venia vacio."
-    if "codigo 4" in lower:
-        return "Al cliente le falta la cuenta de ventas en Sage."
-    if "http 401" in lower or "http 403" in lower:
-        return "La credencial de G Core no fue aceptada."
-    if "pending http" in lower:
-        return "No se pudo consultar la nube."
-    if "ack" in lower:
-        return "La factura se cargo, pero no se pudo marcar como lista en la nube."
-    return d
+def _short_err(text: str) -> str:
+    lower = text.lower()
+    m = re.search(r"(000002:[^\s]+|C\d{7}|\*\d+)", text)
+    who = m.group(1).split(":")[-1] if m else ""
+    if "rounded" in lower or "whole currency" in lower:
+        tip = "Sage: hay que redondear el monto"
+    elif "qty" in lower and "unit price" in lower:
+        tip = "Sage: cantidad x precio no cuadra"
+    elif "current period" in lower:
+        tip = "Sage: fecha fuera del periodo"
+    elif "codigo 3" in lower or "falto el cliente" in lower:
+        tip = "Falto el cliente"
+    elif "codigo 99" in lower:
+        tip = "Sage rechazo la factura"
+    else:
+        tip = "No se pudo guardar"
+    return (who + " · " + tip) if who else tip
