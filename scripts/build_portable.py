@@ -1,6 +1,7 @@
 """Arma AutoHub.exe + ZIP para pasar por AnyDesk (sin GitHub en la PC de Sage)."""
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -98,10 +99,16 @@ def prepare_bundle() -> None:
 
 
 def main() -> None:
-    py = ROOT / ".venv" / "Scripts" / "python.exe"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--python", type=Path, help="Python a usar para compilar")
+    parser.add_argument("--skip-install", action="store_true")
+    parser.add_argument("--no-desktop", action="store_true")
+    args = parser.parse_args()
+    py = args.python or ROOT / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
         py = Path(sys.executable)
-    run([str(py), "-m", "pip", "install", "-q", "pyinstaller"])
+    if not args.skip_install:
+        run([str(py), "-m", "pip", "install", "-q", "pyinstaller"])
     prepare_bundle()
     cmd = [
         str(py),
@@ -134,7 +141,13 @@ def main() -> None:
         "--hidden-import",
         "src.ledger_bridge",
         "--hidden-import",
+        "src.auto_poll",
+        "--hidden-import",
         "src.session_log",
+        "--hidden-import",
+        "src.ui_log_state",
+        "--hidden-import",
+        "src.invoice_lines",
         "--hidden-import",
         "app.ops_app",
         "--hidden-import",
@@ -218,7 +231,7 @@ def main() -> None:
     desktop = Path.home() / "Desktop"
     if not desktop.is_dir():
         desktop = Path.home() / "OneDrive" / "Desktop"
-    if desktop.is_dir():
+    if desktop.is_dir() and not args.no_desktop:
         shutil.copy2(zip_path, desktop / ZIP_NAME)
         shutil.copy2(update_zip, desktop / "AutoHub-update.zip")
         print("ZIP en Escritorio:", desktop / ZIP_NAME)

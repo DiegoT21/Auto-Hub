@@ -23,3 +23,5 @@ PsKloud/
 .cursor/
 .codebase-memory/
 *.zip
+_internal/
+logs/

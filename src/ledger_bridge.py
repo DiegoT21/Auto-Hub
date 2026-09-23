@@ -17,6 +17,14 @@ from src.sage_sdk_write import (
     run_test_company_write,
     sage_ui_running,
 )
+from src.sage_retry import MissingSageItems, find_failed_invoice
+from src.invoice_lines import (
+    forget_incomplete,
+    incomplete_card,
+    is_known_incomplete,
+    pre_sage_block_reason,
+    remember_incomplete,
+)
 
 DEFAULT_BASE_URL = "https://bt41axxide.execute-api.us-east-1.amazonaws.com"
 # Mismo piso que el Extractor. Sage 2025-2026 esta en periodo sep 2026:
@@ -150,6 +158,12 @@ _FIELD_ALIASES = {
     "itbms_factura": ("itbms_factura", "itbmsFactura", "tax_amount", "Tax Amount"),
     "tasa_itbms": ("tasa_itbms", "tasaItbms"),
     "linea": ("linea", "line", "line_number"),
+    "item_codigo": ("item_codigo", "codigo", "itemCode", "itemCodigo", "sku", "coditem"),
+    "codigo": ("codigo", "item_codigo", "itemCode", "itemCodigo", "sku", "coditem"),
+    "dsctounit": ("dsctounit", "dscto_unit", "dsctoUnit", "descuento_unitario"),
+    "dsctoprc": ("dsctoprc", "desctoprc", "dscto_prc", "dsctoPrc", "descuento_porcentaje"),
+    "sucursal": ("sucursal",),
+    "documento": ("documento",),
 }
 
 
@@ -205,6 +219,37 @@ def too_old_for_company(rows: list[dict[str, Any]], min_fecha: str | None = None
     floor = (min_fecha or MIN_SAGE_DATE)[:10]
     stamp = invoice_date(rows)
     return bool(stamp) and stamp < floor
+
+
+def documento_tail(rows: list[dict[str, Any]]) -> str:
+    rec = rows[0] if rows else {}
+    fid = str(rec.get("factura_id") or "").strip()
+    if ":" in fid:
+        return fid.rsplit(":", 1)[-1].strip()
+    return str(rec.get("numero_factura") or rec.get("documento") or "").strip()
+
+
+def skip_not_sales_invoice(rows: list[dict[str, Any]]) -> str:
+    """TMP / '0 Recibida' no son FAC emitidas. No crear cliente ni Invoice No. S-00002."""
+    rec = rows[0] if rows else {}
+    tail = documento_tail(rows).upper()
+    num = str(rec.get("numero_factura") or "").strip().lower()
+    if tail.startswith("TMP"):
+        return "TMP (borrador, no se carga a Sage)"
+    if num in ("0 recibida", "recibida") or num.endswith(" recibida"):
+        return "documento Recibida (no emitida, no se carga a Sage)"
+    return ""
+
+
+def missing_item_sku(rows: list[dict[str, Any]]) -> str:
+    for row in rows:
+        sku = str(row.get("item_codigo") or row.get("codigo") or "").strip()
+        if sku:
+            continue
+        desc = str(row.get("descripcion") or "")
+        linea = str(row.get("linea") or "1")
+        return "linea " + linea + " sin item_codigo | " + desc
+    return ""
 
 
 def invoice_ready(rows: list[dict[str, Any]]) -> bool:
@@ -294,7 +339,23 @@ def pending_jobs(payload: Any) -> list[dict[str, Any]]:
                     continue
                 merged = dict(header)
                 merged.update(_normalize_record(line))
-                for keep in ("factura_id", "numero_factura", "cliente_codigo", "cliente_nombre", "fecha_emision", "ruc", "total_factura", "subtotal", "itbms_factura"):
+                for keep in (
+                    "factura_id",
+                    "numero_factura",
+                    "cliente_codigo",
+                    "cliente_nombre",
+                    "fecha_emision",
+                    "ruc",
+                    "total_factura",
+                    "subtotal",
+                    "itbms_factura",
+                    "codigo",
+                    "item_codigo",
+                    "dsctounit",
+                    "dsctoprc",
+                    "sucursal",
+                    "documento",
+                ):
                     if header.get(keep) and not merged.get(keep):
                         merged[keep] = header[keep]
                 if header.get("factura_id"):
@@ -377,12 +438,14 @@ def process_ledger_pending(
     config: dict[str, Any],
     on_log: Callable[[str], None],
 ) -> dict[str, int]:
-    stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0}
+    stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0, "cloud_empty": 0, "blocked": 0}
     if not is_configured(root, config):
         on_log("Sin JWT de Ledger Bridge. Pon config/ledger_bridge.jwt")
+        stats["blocked"] = 1
         return stats
     if not sage_ui_running():
         on_log("Automatico: Sage no esta abierto. Deja LYL 2025-2026 abierta.")
+        stats["blocked"] = 1
         return stats
 
     jobs, raw = fetch_pending(root, config)
@@ -399,6 +462,7 @@ def process_ledger_pending(
             cnt = parsed_preview.get("count")
             empty = inv == [] or cnt == 0
         if empty or not raw or raw.strip() in ("", "[]", "{}", "null"):
+            stats["cloud_empty"] = 1
             on_log("Nube sin pendientes. Sigo esperando.")
             return stats
         dump_path = dump_pending(root, raw)
@@ -409,6 +473,15 @@ def process_ledger_pending(
     dump_path = dump_pending(root, raw)
     on_log("Ledger Bridge: " + str(len(jobs)) + " lote(s) pendientes")
     on_log("JSON pending: " + str(dump_path))
+    keys = [str((job.get("rows") or [{}])[0].get("factura_id") or "") for job in jobs]
+    repetidas = sorted({key for key in keys if key and keys.count(key) > 1})
+    if repetidas:
+        on_log(
+            "Nube repitio "
+            + str(len(repetidas))
+            + " factura(s) en el mismo lote: "
+            + ", ".join(repetidas[:5])
+        )
     done_items: list[dict[str, str]] = []
     floor = min_invoice_date(config)
     old_count = sum(1 for job in jobs if too_old_for_company(job.get("rows") or [], floor))
@@ -427,6 +500,20 @@ def process_ledger_pending(
             if item.get("branchId") and item.get("facturaId"):
                 done_items.append(item)
             continue
+        skip_tmp = skip_not_sales_invoice(rows)
+        if skip_tmp:
+            on_log("Omitida " + ack_id + ": " + skip_tmp)
+            stats["skipped"] += 1
+            stats["files"] += 1
+            if item.get("branchId") and item.get("facturaId"):
+                done_items.append(item)
+            continue
+        sku_err = missing_item_sku(rows)
+        if sku_err:
+            on_log("ERROR auto " + ack_id + ": " + sku_err)
+            stats["failed"] += 1
+            stats["files"] += 1
+            continue
         if too_old_for_company(rows, floor):
             stats["skipped"] += 1
             stats["files"] += 1
@@ -434,6 +521,7 @@ def process_ledger_pending(
                 done_items.append(item)
             continue
         file_ok = True
+        hold_ack = False
         for inv in group_invoices(rows):
             label = str(inv[0].get("factura_id") or inv[0].get("numero_factura") or "?")
             cliente = str(inv[0].get("cliente_nombre") or "")
@@ -443,17 +531,52 @@ def process_ledger_pending(
                     on_log("Ya enviada, se omite: " + label)
                     stats["skipped"] += 1
                     continue
+                held = find_failed_invoice(root, inv)
+                if held:
+                    on_log(
+                        "Ya en cola de fallidas (esperando items): "
+                        + label
+                        + " | crear en Sage: "
+                        + ", ".join(str(s) for s in (held.get("missing_skus") or []))
+                    )
+                    stats["skipped"] += 1
+                    hold_ack = True
+                    continue
+                falta = pre_sage_block_reason(inv)
+                if falta:
+                    if is_known_incomplete(root, inv):
+                        on_log("Sigue incompleta, en espera: " + label)
+                        stats["skipped"] += 1
+                    else:
+                        remember_incomplete(root, inv, falta)
+                        on_log("Enviando " + label + " | " + cliente)
+                        on_log(incomplete_card(inv, falta))
+                        if falta.lower().startswith("itbms"):
+                            on_log("ITBMS no cuadra, no se carga a Sage: " + falta)
+                        else:
+                            on_log("Factura incompleta, no se carga a Sage: " + falta)
+                        stats["failed"] += 1
+                    file_ok = False
+                    continue
+                forget_incomplete(root, inv)
                 on_log("Enviando " + label + " | " + cliente)
-                run_test_company_write(root, inv, on_log=on_log)
+                run_test_company_write(root, inv, on_log=on_log, hold_missing=True)
                 stats["sent"] += 1
             except DuplicateSageInvoice:
                 on_log("Ya enviada, se omite: " + label)
                 stats["skipped"] += 1
+            except MissingSageItems as exc:
+                on_log(
+                    "Items faltantes en Sage. Factura en cola hasta Enviar fallidas. SKU: "
+                    + (", ".join(exc.missing) if exc.missing else label)
+                )
+                stats["failed"] += 1
+                hold_ack = True
             except Exception as exc:
                 on_log("ERROR auto " + label + ": " + str(exc))
                 stats["failed"] += 1
                 file_ok = False
-        if file_ok and item.get("branchId") and item.get("facturaId"):
+        if (file_ok or hold_ack) and item.get("branchId") and item.get("facturaId"):
             done_items.append(item)
         stats["files"] += 1
 

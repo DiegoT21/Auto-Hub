@@ -1,6 +1,7 @@
 """Convierte mensajes tecnicos a eventos cortos para la UI (status / ok / err / skip)."""
 from __future__ import annotations
 
+import json
 import re
 
 # Lineas internas: no van a la pantalla.
@@ -40,6 +41,7 @@ _SKIP_PREFIXES = (
     "cliente sage:",
     "cliente en sage:",
     "clientes en sage:",
+    "cliente no existe en sage. se crea",
     "referencenumber sage:",
     "numero en sage:",
     "match por",
@@ -53,13 +55,8 @@ _SKIP_PREFIXES = (
     "  reference:",
     "registrada para no duplicar:",
     "pidiendo permiso",
-    "solicitando acceso",
-    "already granted",
-    "autorizacion: granted",
-    "ok - acceso granted",
     "permiso de sage",
     "sage ya habia",
-    "ya no deberia pedir",
     "use la misma cuenta",
     "gl copiado",
     "guardando el cliente nuevo",
@@ -79,18 +76,52 @@ _SKIP_CONTAINS = (
 )
 
 
+def parse_invoice_card(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if raw.lower().startswith("[card]"):
+        raw = raw.split("]", 1)[-1].strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def classify(msg: str) -> tuple[str, str] | None:
     """Devuelve (kind, texto) o None para tirar el mensaje.
 
-    kind: status | load | ok | err | skip
+    kind: status | load | ok | err | skip | card
     """
     text = (msg or "").strip()
     if not text:
         return None
     lower = text.lower()
 
-    if any(lower.startswith(p) for p in _SKIP_PREFIXES):
+    if lower.startswith("[card]"):
+        return "card", text
+
+    if lower.startswith("[trace]"):
+        if (
+            " fail " in lower
+            or "ultimo_fail" in lower
+            or "aviso win32" in lower
+            or "add-type exception" in lower
+        ):
+            mapped = _map(text, lower)
+            if mapped:
+                shown, kind = mapped
+                return kind, shown
+            return "err", "Fallo Sage: " + text[:220]
         return None
+
+    if any(lower.startswith(p) for p in _SKIP_PREFIXES):
+        if not (
+            lower.startswith("linea ")
+            and ("item creado" in lower or "sin item" in lower or "item=" in lower)
+        ):
+            return None
     if any(s in lower for s in _SKIP_CONTAINS):
         return None
     if text.startswith("  - ") or text.startswith("- LYL"):
@@ -111,6 +142,8 @@ def friendly_log(msg: str) -> str | None:
 
 
 def _map(text: str, lower: str) -> tuple[str, str] | None:
+    if lower.startswith("[card]"):
+        return text, "card"
     if lower.startswith("[ok]"):
         rest = text.split("]", 1)[-1].strip()
         if "sage conectado" in lower:
@@ -150,6 +183,16 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
         return rest, "load"
     if "ya enviada" in lower:
         return "Ya estaba en Sage. No se duplica.", "skip"
+    if "borrador, no se carga" in lower or "recibida (no emitida" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return rest or "Borrador TMP. No se carga a Sage.", "skip"
+    if "sin item_codigo de pskloud" in lower or "sin item_codigo |" in lower:
+        rest = text.split("|", 1)[-1].strip() if "|" in text else ""
+        return (
+            "G Core no trajo codigo de item"
+            + ((" · " + rest) if rest else "")
+            + ". No se guardo."
+        ), "err"
     if "lote incompleto" in lower:
         return "Dato incompleto (sin cliente o numero).", "err"
     if "factura vieja" in lower:
@@ -174,8 +217,158 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
         return "Hablando con Sage...", "status"
     if "always allow" in lower and "accion en sage" in lower:
         return "En Sage, elige Always Allow una vez.", "status"
+    if "already granted" in lower or "ok - acceso granted" in lower:
+        return "Sage autorizo Always Allow.", "status"
+    if "solicitando acceso" in lower:
+        return "Pidiendo acceso a Sage...", "status"
+    if "ya no deberia pedir" in lower:
+        return "Sage ya no deberia pedir Allow en cada carga.", "status"
+    if lower.startswith("error fallida"):
+        return _short_err(text), "err"
+    if lower.startswith("error:") or lower.startswith("add-type"):
+        if (
+            "no existe en sage" in lower
+            or ("faltan " in lower and "items en sage" in lower)
+            or "codigo 16" in lower
+            or "no se pudo crear item" in lower
+        ):
+            return _short_err(text), "err"
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return (rest[:180] or "Sage host fallo."), "err"
     if "no se pudo crear el cliente" in lower or "error creando cliente" in lower:
         return "Sage no dejo crear el cliente.", "err"
+    if "borrando facturas ah" in lower:
+        return "Borrando facturas AH de Sage...", "status"
+    if lower.startswith("borrada:"):
+        rest = text.split(":", 1)[-1].strip()
+        return "Borrada " + rest, "status"
+    if "ok - facturas ah borradas" in lower:
+        rest = text.split(":", 1)[-1].strip()
+        return "Borradas de Sage: " + rest, "ok"
+    if lower.startswith("no se pudo borrar"):
+        return text, "err"
+    if "quitadas de enviadas" in lower:
+        return "Lista de enviadas actualizada.", "status"
+    if "gl ventas sucursal" in lower:
+        rest = text.split(":", 1)[-1].strip()
+        return "Cuenta ventas Sage: " + rest, "status"
+    if "gl descuento sucursal" in lower:
+        rest = text.split(":", 1)[-1].strip()
+        return "Cuenta descuento Sage: " + rest, "status"
+    if "sage sigue minimizado" in lower or "con sage minimizado" in lower:
+        return "Sage esta minimizado. Restauralo a pantalla y reintenta.", "err"
+    if lower.startswith("[trace]"):
+        fn = re.search(r"fn=([^\s]+)", text)
+        paso = re.search(r"paso=([^\s]+)", text)
+        linea = re.search(r"linea=([^\s]+)", text)
+        sku = re.search(r"sku=([^\s]+)", text)
+        bits = []
+        if fn:
+            bits.append(fn.group(1))
+        if paso:
+            bits.append("paso " + paso.group(1))
+        if linea:
+            bits.append("linea " + linea.group(1))
+        if sku:
+            bits.append("SKU " + sku.group(1))
+        where = " · ".join(bits) if bits else text[7:80].strip()
+        return "Fallo Sage: " + where, "err"
+    if "aviso win32 ui no cargo" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return "Win32 UI no cargo: " + rest[:180], "err"
+    if "sage restaurado" in lower:
+        return "Sage restaurado. Abriendo inventario...", "status"
+    if "prueba full sage" in lower:
+        return "Prueba full de factura en Sage...", "status"
+    if "reporte de prueba full" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return "Reporte de prueba: " + rest, "status"
+    if lower.startswith("prueba full:"):
+        if "fallo" in lower:
+            return text[:220], "err"
+        return text[:220], "ok"
+    if "error prueba full" in lower:
+        return text[:220], "err"
+    if "factura de prueba guardada" in lower:
+        return "Factura de prueba guardada. Borrando esa AH...", "status"
+    if "no se guardo la factura. no se borra" in lower:
+        return "La prueba no se guardo. No se borro nada.", "err"
+    if "no se pudo borrar la factura de prueba" in lower:
+        return "Se creo la prueba pero no se pudo borrar. Revisa Sage.", "err"
+    if "probando match de items" in lower or "probando crear items" in lower:
+        return "Probando match de items en Sage...", "status"
+    if lower.startswith("probe "):
+        if "ninguna via" in lower:
+            return text[:180], "err"
+        if "resumen" in lower:
+            any_ok = "=OK" in text or "=ok" in text
+            return text, "ok" if any_ok else "err"
+        return text[:180], "status"
+    if "nube repitio" in lower:
+        return text[:200], "skip"
+    if "itbms no cuadra, no se carga a sage" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return (rest[:220] or "ITBMS de la factura no cuadra con Sage."), "err"
+    if "factura incompleta, no se carga a sage" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return (rest[:220] or "La factura llego sin todos sus items."), "err"
+    if "sigue incompleta, en espera" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return "Esperando los items que faltan: " + rest, "skip"
+    if "fallida guardada" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return "En cola hasta crear items en Sage: " + rest, "err"
+    if "items faltantes en sage" in lower:
+        return text[:220], "err"
+    if "ya en cola de fallidas" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return "Esperando items: " + rest, "skip"
+    if "reenviando" in lower and "fallida" in lower:
+        return "Reenviando facturas fallidas...", "status"
+    if lower.startswith("enviando fallida "):
+        rest = text[len("Enviando fallida ") :].strip()
+        return rest, "load"
+    if "fallida cargada" in lower:
+        return "Fallida cargada en Sage.", "status"
+    if lower.startswith("fallidas: cargadas"):
+        return text[:180], "ok" if "siguen 0" in lower else "status"
+    if "sigue sin item en sage" in lower:
+        return text[:220], "err"
+    if "no hay facturas fallidas" in lower:
+        return "No hay facturas fallidas.", "status"
+    if (
+        "no existe en sage" in lower
+        or ("faltan " in lower and ("item en sage" in lower or "items en sage" in lower))
+        or "no se pudo crear item sage" in lower
+        or "no se pudo poner item id" in lower
+    ):
+        return "El item no esta en Sage. La factura no se guardo.", "err"
+    if lower.startswith("[item]"):
+        rest = text.split("]", 1)[-1].strip()
+        if "fallo" in lower:
+            return rest, "err"
+        return rest, "status"
+    if "item creado y recargado" in lower:
+        return "Item creado en Sage y puesto en la linea.", "status"
+    if "no se pudo crear el item" in lower or "no tiene create() de inventario" in lower:
+        return "Sage no deja crear items por SDK. Se intenta por ventana.", "status"
+    if "item creado en maintain inventory" in lower:
+        rest = text.split(":", 1)[-1].strip()
+        return "Item creado en la ventana de Sage: " + rest, "status"
+    if "abriendo maintain inventory" in lower:
+        return "Abriendo Maintain Inventory Items en Sage...", "status"
+    if "com import item ok" in lower:
+        return "Item importado a Sage por COM.", "status"
+    if "item sage encontrado" in lower:
+        rest = text.split(":", 1)[-1].strip()
+        return "Item Sage: " + rest, "status"
+    if "item sage no encontrado" in lower:
+        rest = text.split(":", 1)[-1].strip()
+        return "Sin item Sage: " + rest, "status"
+    if lower.startswith("linea ") and "sin item" in lower:
+        return "Linea sin item Sage; se uso cuenta GL.", "status"
+    if lower.startswith("linea ") and "item=" in lower:
+        return "Linea con item que ya existia en Sage.", "status"
     if "enviar a sage salio con codigo" in lower or "conectar sage salio" in lower or "sage no pudo guardar" in lower:
         return _short_err(text), "err"
     if "se agoto el tiempo" in lower:
@@ -205,6 +398,17 @@ def _short_err(text: str) -> str:
         tip = "Sage: fecha fuera del periodo"
     elif "codigo 3" in lower or "falto el cliente" in lower:
         tip = "Falto el cliente"
+    elif "sin item_codigo" in lower:
+        tip = "G Core no trajo el codigo del item"
+    elif "add-type" in lower or "win32 ui no cargo" in lower:
+        tip = "El host Win32 de Sage no cargo (Add-Type)"
+    elif (
+        "codigo 16" in lower
+        or "no existe en sage" in lower
+        or ("faltan " in lower and ("item en sage" in lower or "items en sage" in lower))
+        or "no se pudo crear item" in lower
+    ):
+        tip = "El item no existe en Sage"
     elif "codigo 99" in lower:
         tip = "Sage rechazo la factura"
     else:

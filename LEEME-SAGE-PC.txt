@@ -1,0 +1,35 @@
+Auto-Hub en la PC de Sage
+==========================
+
+NO hace falta iniciar sesion en GitHub.
+
+Instalar (una vez)
+------------------
+1. Pasa esta carpeta por AnyDesk (o el ZIP AutoHub-AnyDesk.zip).
+2. Dejala en C:\AutoHub
+3. Doble clic en AutoHub.exe
+
+El Application ID de Sage ya debe estar en:
+  C:\Temp\sage_sdk\app_id.txt
+(el que usamos en las pruebas).
+
+Actualizar despues
+------------------
+1. Te paso un AutoHub-update.zip nuevo por AnyDesk.
+2. Ponlo en el Escritorio o junto a AutoHub.exe.
+3. Abre Auto-Hub y pulsa "Actualizar app".
+
+No pisa contraseñas, app_id.txt ni ledger_bridge.jwt.
+
+Ledger Bridge (obligatorio en esta version)
+------------------------------------------
+Copia el JWT injector (cred ledge.txt) a:
+  la carpeta config junto al AutoHub.exe
+  (ejemplo: C:\AutoHub\config\ledger_bridge.jwt)
+Una sola linea, sin comillas.
+
+Sage abierto en LYL + Conectar Sage (Always Allow una vez) + Automatico ON.
+La pantalla muestra tres recuadros: lo que esta haciendo ahora, las que cargo en Sage y los fallos.
+Las facturas viejas no llenan la lista: solo suman en Omitidas.
+El detalle del dia (y el dump de Sage si una factura fallo) esta en la carpeta logs junto al exe. Boton Ver logs.
+Solo facturas desde el 3 sep 2026 entran a Sage (mismo piso que el Extractor).

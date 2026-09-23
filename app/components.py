@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 import customtkinter as ctk
 
@@ -190,3 +190,156 @@ def section_title(parent, title: str, subtitle: str = "") -> ctk.CTkFrame:
             text_color=theme.TEXT_SECONDARY,
         ).pack(anchor="w", pady=(4, 0))
     return wrap
+
+
+CARD_WRAP = 300
+
+
+def card_line(parent, text: str, *, font, color: str, wrap: int = 0, side: str | None = None):
+    """Etiqueta de tarjeta que mide por su texto (CTkLabel trae 28 px fijos por defecto)."""
+    label = ctk.CTkLabel(
+        parent,
+        text=text,
+        font=font,
+        text_color=color,
+        height=1,
+        anchor="w",
+        justify="left",
+        **({"wraplength": wrap} if wrap else {}),
+    )
+    if side:
+        label.pack(side=side)
+    else:
+        label.pack(fill="x")
+    return label
+
+
+def fail_summary(payload: dict[str, Any]) -> str:
+    """Una linea corta que siempre dice por que fallo la factura."""
+    lines = [ln for ln in (payload.get("lines") or []) if isinstance(ln, dict)]
+    missing = list(
+        dict.fromkeys(
+            str(ln.get("sku") or "").strip()
+            for ln in lines
+            if not ln.get("ok") and str(ln.get("sku") or "").strip()
+        )
+    )
+    if missing:
+        word = "item" if len(missing) == 1 else "items"
+        shown = ", ".join(missing[:3]) + (" +" + str(len(missing) - 3) if len(missing) > 3 else "")
+        return "Faltan " + str(len(missing)) + " " + word + " en Sage: " + shown
+    detail = str(payload.get("detail") or "").strip()
+    if detail:
+        first = detail.splitlines()[0].strip()
+        return first if len(first) <= 120 else (first[:117] + "...")
+    return "Sage no guardo la factura. Abre Ver detalle."
+
+
+def invoice_card(parent, payload: dict[str, Any]) -> ctk.CTkFrame:
+    """Tarjeta compacta: numero, cliente y, si fallo, el motivo siempre a la vista."""
+    ok = bool(payload.get("ok"))
+    bar = theme.CARD_DOT_OK if ok else theme.CARD_DOT_ERR
+    outer = ctk.CTkFrame(
+        parent,
+        fg_color=theme.CARD_OK_BG if ok else theme.CARD_ERR_BG,
+        corner_radius=8,
+        border_width=1,
+        border_color=theme.CARD_OK_BORDER if ok else theme.CARD_ERR_BORDER,
+    )
+    body = ctk.CTkFrame(outer, fg_color="transparent", height=1)
+    body.pack(fill="both", expand=True)
+    # height=1: sin esto el CTkFrame impone su alto por defecto (200 px) a la tarjeta.
+    ctk.CTkFrame(body, width=3, height=1, fg_color=bar, corner_radius=2).pack(side="left", fill="y")
+    inner = ctk.CTkFrame(body, fg_color="transparent", height=1)
+    inner.pack(side="left", fill="both", expand=True, padx=7, pady=4)
+
+    head = ctk.CTkFrame(inner, fg_color="transparent", height=1)
+    head.pack(fill="x")
+    card_line(
+        head,
+        str(payload.get("ref") or "Factura"),
+        font=("Segoe UI", 11, "bold"),
+        color=theme.TEXT_PRIMARY,
+        side="left",
+    )
+    total = str(payload.get("total") or "").strip()
+    if total:
+        card_line(
+            head,
+            total if total.startswith("$") else ("$" + total),
+            font=("Segoe UI", 10, "bold"),
+            color=theme.TEXT_PRIMARY,
+            side="right",
+        )
+
+    cust = str(payload.get("customer_name") or payload.get("customer_id") or "").strip()
+    date = str(payload.get("date") or "").strip()
+    sub = " · ".join(bit for bit in (cust, date) if bit)
+    if sub:
+        card_line(
+            inner,
+            sub if len(sub) <= 52 else (sub[:49] + "..."),
+            font=("Segoe UI", 9),
+            color=theme.TEXT_SECONDARY,
+        )
+
+    lines = [ln for ln in (payload.get("lines") or []) if isinstance(ln, dict)]
+    if ok:
+        n = len(lines)
+        card_line(
+            inner,
+            (str(n) + (" item" if n == 1 else " items") + " en Sage") if n else "Cargada en Sage",
+            font=("Segoe UI", 9, "bold"),
+            color=theme.CARD_OK_SOFT,
+        )
+        return outer
+
+    card_line(
+        inner,
+        fail_summary(payload),
+        font=("Segoe UI", 9, "bold"),
+        color=theme.CARD_ERR_SOFT,
+        wrap=CARD_WRAP,
+    )
+
+    detail = str(payload.get("detail") or "").strip() or "Sin detalle de Sage. Revisa Ver logs."
+    detail_box = ctk.CTkFrame(inner, fg_color="transparent", height=1)
+    bad = [ln for ln in lines if not ln.get("ok")]
+    for ln in (bad or lines)[:6]:
+        card_line(
+            detail_box,
+            "L"
+            + str(ln.get("n") or "?")
+            + "  "
+            + str(ln.get("sku") or "(sin codigo)")
+            + ("  falta en Sage" if not ln.get("ok") else ""),
+            font=("Segoe UI", 9),
+            color=theme.CARD_ERR_SOFT if not ln.get("ok") else theme.TEXT_SECONDARY,
+        )
+    card_line(
+        detail_box,
+        detail,
+        font=("Segoe UI", 9),
+        color=theme.TEXT_SECONDARY,
+        wrap=CARD_WRAP,
+    )
+
+    def toggle() -> None:
+        if detail_box.winfo_manager():
+            detail_box.pack_forget()
+            fix_btn.configure(text="Ver detalle")
+        else:
+            detail_box.pack(fill="x", pady=(2, 0))
+            fix_btn.configure(text="Ocultar")
+
+    fix_btn = btn(
+        inner,
+        text="Ver detalle",
+        variant="danger",
+        width=84,
+        height=20,
+        font=("Segoe UI", 9),
+        command=toggle,
+    )
+    fix_btn.pack(anchor="e", pady=(2, 0))
+    return outer

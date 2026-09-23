@@ -307,6 +307,7 @@ def restart_autohub(root: Path) -> None:
             ["cmd.exe", "/c", str(apply_bat)],
             cwd=str(root),
             close_fds=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
         )
         return
     if is_frozen():

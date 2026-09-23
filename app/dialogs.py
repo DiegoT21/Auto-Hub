@@ -24,13 +24,23 @@ def _open_modal(parent: ctk.CTk, window: ctk.CTkToplevel, width: int, height: in
     window.configure(fg_color="#FFFFFF")
     window.resizable(False, False)
     window.transient(parent)
+    window.protocol("WM_DELETE_WINDOW", window.destroy)
     _place_on_parent(window, parent, width, height)
-    window.lift()
-    window.attributes("-topmost", True)
+    try:
+        window.attributes("-topmost", True)
+    except Exception:
+        pass
     window.deiconify()
+    try:
+        window.update()
+    except Exception:
+        pass
+    window.lift()
     window.focus_force()
-    window.grab_set()
-    window.after(400, lambda: window.attributes("-topmost", False) if window.winfo_exists() else None)
+    try:
+        window.grab_set()
+    except Exception:
+        pass
 
 
 def ask_text(parent: ctk.CTk, title: str, prompt: str, initial: str = "") -> str | None:

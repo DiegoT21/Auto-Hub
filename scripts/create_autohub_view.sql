@@ -6,6 +6,7 @@ DROP VIEW IF EXISTS autohub_v_facturas;
 CREATE VIEW autohub_v_facturas AS
 SELECT
     CONCAT(h.id_empresa, ':', h.agencia, ':', h.tipodoc, ':', h.documento) AS factura_id,
+    TRIM(h.documento) AS documento,
     COALESCE(
         NULLIF(TRIM(h.documentofiscal), ''),
         CONCAT('FAC-', LPAD(TRIM(TRIM(LEADING '0' FROM TRIM(h.documento))), 8, '0'))
@@ -18,9 +19,13 @@ SELECT
     TRIM(h.nombrecli) AS cliente_nombre,
     TRIM(h.rif) AS ruc,
     d.origen AS linea,
+    TRIM(d.codigo) AS codigo,
+    TRIM(d.codigo) AS item_codigo,
     TRIM(d.nombre) AS descripcion,
     d.cantidad,
     d.preciounit AS precio_unitario,
+    d.dsctounit,
+    d.dsctoprc,
     CASE
         WHEN d.timpueprc >= 1 THEN d.timpueprc / 100
         ELSE d.timpueprc
@@ -47,4 +52,5 @@ LEFT JOIN almacene a
 WHERE h.tipodoc = 'FAC'
   AND h.totalfinal > 0
   AND TRIM(h.estatusdoc) IN ('0', '2')
-  AND d.cantidad > 0;
+  AND d.cantidad > 0
+  AND TRIM(h.documento) NOT LIKE 'TMP%';

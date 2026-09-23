@@ -15,6 +15,14 @@ from src.sage_sdk_write import (
     run_test_company_write,
     sage_ui_running,
 )
+from src.sage_retry import MissingSageItems, find_failed_invoice
+from src.invoice_lines import (
+    forget_incomplete,
+    incomplete_card,
+    is_known_incomplete,
+    pre_sage_block_reason,
+    remember_incomplete,
+)
 
 
 def default_outbox_dir() -> Path:
@@ -58,13 +66,24 @@ def parse_jsonl(path: Path) -> list[dict[str, Any]]:
 def group_invoices(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     order: list[str] = []
     buckets: dict[str, list[dict[str, Any]]] = {}
+    # El extractor entrega "al menos una vez": la misma linea puede repetirse en
+    # un reenvio y no debe duplicar el item dentro de la factura.
+    seen_lines: dict[str, set[tuple[str, str]]] = {}
     for row in rows:
         key = str(row.get("factura_id") or row.get("numero_factura") or "").strip()
         if not key:
             key = "_sin_id_"
         if key not in buckets:
             buckets[key] = []
+            seen_lines[key] = set()
             order.append(key)
+        line_key = (
+            str(row.get("linea") or ""),
+            str(row.get("item_codigo") or row.get("codigo") or ""),
+        )
+        if line_key in seen_lines[key]:
+            continue
+        seen_lines[key].add(line_key)
         buckets[key].append(row)
     return [buckets[key] for key in order]
 
@@ -82,11 +101,12 @@ def process_extractor_outbox(
     config: dict[str, Any],
     on_log: Callable[[str], None],
 ) -> dict[str, int]:
-    stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0}
+    stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0, "cloud_empty": 0, "blocked": 0}
     folder = outbox_dir(config, root)
     on_log("Automatico: revisando Sage y la nube...")
     if not sage_ui_running():
         on_log("Automatico: Sage no esta abierto. Deja LYL 2025-2026 abierta.")
+        stats["blocked"] = 1
         return stats
 
     from src.ledger_bridge import is_configured, process_ledger_pending
@@ -94,8 +114,10 @@ def process_extractor_outbox(
     if is_configured(root, config):
         on_log("Consultando Ledger Bridge...")
         cloud = process_ledger_pending(root, config, on_log)
-        for key in stats:
+        for key in ("sent", "skipped", "failed", "files"):
             stats[key] += int(cloud.get(key) or 0)
+        stats["cloud_empty"] = int(cloud.get("cloud_empty") or 0)
+        stats["blocked"] = int(cloud.get("blocked") or 0)
 
     pending = list_batch_files(folder)
     if not pending:
@@ -132,12 +154,46 @@ def process_extractor_outbox(
                     on_log("Ya enviada, se omite: " + label)
                     stats["skipped"] += 1
                     continue
+                held = find_failed_invoice(root, inv)
+                if held:
+                    on_log(
+                        "Ya en cola de fallidas (esperando items): "
+                        + label
+                        + " | crear en Sage: "
+                        + ", ".join(str(s) for s in (held.get("missing_skus") or []))
+                    )
+                    stats["skipped"] += 1
+                    continue
+                falta = pre_sage_block_reason(inv)
+                if falta:
+                    if is_known_incomplete(root, inv):
+                        on_log("Sigue incompleta, en espera: " + label)
+                        stats["skipped"] += 1
+                    else:
+                        remember_incomplete(root, inv, falta)
+                        on_log("Enviando " + label + " | " + cliente)
+                        on_log(incomplete_card(inv, falta))
+                        if falta.lower().startswith("itbms"):
+                            on_log("ITBMS no cuadra, no se carga a Sage: " + falta)
+                        else:
+                            on_log("Factura incompleta, no se carga a Sage: " + falta)
+                        stats["failed"] += 1
+                    file_ok = False
+                    continue
+                forget_incomplete(root, inv)
                 on_log("Enviando " + label + " | " + cliente)
-                run_test_company_write(root, inv, on_log=on_log)
+                run_test_company_write(root, inv, on_log=on_log, hold_missing=True)
                 stats["sent"] += 1
             except DuplicateSageInvoice:
                 on_log("Ya enviada, se omite: " + label)
                 stats["skipped"] += 1
+            except MissingSageItems as exc:
+                on_log(
+                    "Items faltantes en Sage. Factura en cola hasta Enviar fallidas. SKU: "
+                    + (", ".join(exc.missing) if exc.missing else label)
+                )
+                stats["failed"] += 1
+                file_ok = False
             except Exception as exc:
                 on_log("ERROR auto " + label + ": " + str(exc))
                 stats["failed"] += 1

@@ -149,10 +149,7 @@ namespace AutoHub.SageInvoiceProbe
             var first = records[0];
             var numeroOrigen = GetString(first, "numero_factura") ?? "SIN-NUM";
             var fechaEmision = ParseDate(GetString(first, "fecha_emision")) ?? DateTime.Today;
-            // Sage ReferenceNumber suele ser corto; AH + yyyyMMddHHmmss = 16 chars
-            var refNumber = "AH" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
-            if (refNumber.Length > 20)
-                refNumber = refNumber.Substring(0, 20);
+            var refNumber = SageInvoiceNumber(first, fechaEmision);
 
             Console.WriteLine("Factura origen PsKloud: " + numeroOrigen +
                 " (factura_id=" + GetString(first, "factura_id") + ", lineas=" + records.Count + ")");
@@ -259,6 +256,7 @@ namespace AutoHub.SageInvoiceProbe
                 Console.WriteLine("  Fecha / referencia / nota configurados.");
 
                 int lineNo = 0;
+                decimal netSum = 0m;
                 foreach (var rec in records)
                 {
                     lineNo++;
@@ -274,8 +272,8 @@ namespace AutoHub.SageInvoiceProbe
                     var desc = GetString(rec, "descripcion") ?? ("Linea " + lineNo);
                     var qty = ParseDecimal(GetString(rec, "cantidad")) ?? 1m;
                     var price = Money(ParseDecimal(GetString(rec, "precio_unitario")) ?? 0m);
-                    // Sage exige centavos. El monto de linea es qty x precio, no el total_linea crudo de PsKloud.
                     var amount = Money(qty * price);
+                    netSum += amount;
 
                     TrySetStringProp(line, "Description", desc);
                     TrySetProp(line, "Quantity", qty);
@@ -284,11 +282,35 @@ namespace AutoHub.SageInvoiceProbe
                     TrySetProp(line, "Amount", amount);
                     TrySetProp(line, "AccountReference", salesAcctRef);
                     TrySetProp(line, "GLAccountReference", salesAcctRef);
-                    // Sin inventory item: linea de GL / description-only
                     TrySetProp(line, "IsInventory", false);
 
                     Console.WriteLine("  Linea " + lineNo + ": qty=" + qty +
-                        " price=" + price + " | " + Truncate(desc, 60));
+                        " price=" + price + " amount=" + amount + " | " + Truncate(desc, 60));
+                }
+
+                var tasa = ParseDecimal(GetString(first, "tasa_itbms")) ?? 0.07m;
+                var itbms = Money(ParseDecimal(GetString(first, "itbms_factura")) ?? 0m);
+                var headerTotal = Money(ParseDecimal(GetString(first, "total_factura")) ?? 0m);
+                if (headerTotal > 0)
+                    itbms = Money(headerTotal - netSum);
+                else if (itbms <= 0 && tasa > 0)
+                    itbms = Money(netSum * tasa);
+                if (itbms > 0)
+                {
+                    object taxLine = AddInvoiceLine(invoice, company);
+                    if (taxLine != null)
+                    {
+                        var taxDesc = "ITBMS " + ((int)Math.Round(tasa * 100m)) + "%";
+                        TrySetStringProp(taxLine, "Description", taxDesc);
+                        TrySetProp(taxLine, "Quantity", 1m);
+                        TrySetProp(taxLine, "QuantitySold", 1m);
+                        TrySetProp(taxLine, "UnitPrice", itbms);
+                        TrySetProp(taxLine, "Amount", itbms);
+                        TrySetProp(taxLine, "AccountReference", salesAcctRef);
+                        TrySetProp(taxLine, "GLAccountReference", salesAcctRef);
+                        TrySetProp(taxLine, "IsInventory", false);
+                        Console.WriteLine("  Linea ITBMS: " + itbms);
+                    }
                 }
 
                 Console.WriteLine();
@@ -910,6 +932,43 @@ namespace AutoHub.SageInvoiceProbe
         private static decimal Money(decimal value)
         {
             return Math.Round(value, 2, MidpointRounding.AwayFromZero);
+        }
+
+        private static string SageStoreLetter(Dictionary<string, object> first)
+        {
+            var s = (GetString(first, "sucursal") ?? "").ToUpperInvariant();
+            if (s.Contains("RIO ABAJO")) return "R";
+            if (s.Contains("CORONADO")) return "C";
+            if (s.Contains("ADI")) return "A";
+            return "S";
+        }
+
+        private static string SageInvoiceSeq(Dictionary<string, object> first)
+        {
+            var id = GetString(first, "factura_id") ?? "";
+            var num = GetString(first, "numero_factura") ?? "";
+            var blob = id + " " + num;
+            var m = Regex.Match(blob, @"(C|\*)(\d{5,})");
+            var digits = m.Success ? m.Groups[2].Value : "";
+            if (string.IsNullOrEmpty(digits))
+            {
+                m = Regex.Match(blob, @"(\d{5,})");
+                if (m.Success) digits = m.Groups[1].Value;
+            }
+            if (string.IsNullOrEmpty(digits))
+                digits = "0";
+            if (digits.Length > 5)
+                digits = digits.Substring(digits.Length - 5);
+            return digits.PadLeft(5, '0');
+        }
+
+        private static string SageInvoiceNumber(Dictionary<string, object> first, DateTime fecha)
+        {
+            var letter = SageStoreLetter(first);
+            var day = fecha.ToString("ddMMyy", CultureInfo.InvariantCulture);
+            var seq = SageInvoiceSeq(first);
+            var reference = "AH" + day + "-" + letter + "-" + seq;
+            return reference.Length <= 20 ? reference : reference.Substring(0, 20);
         }
 
         private static DateTime? ParseDate(string s)

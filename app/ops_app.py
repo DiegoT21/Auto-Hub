@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
 import sys
 import threading
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -22,14 +23,31 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app import theme
-from app.components import btn, glass_card
+from app.history_panel import HistoryPanel
+from src.failure_view import failure_groups
+from app.components import btn, glass_card, invoice_card
 from app.dialogs import ask_confirm, show_error, show_info
-from app.user_log import classify
+from app.user_log import classify, parse_invoice_card
 from src.app_update import restart_autohub, run_update
+from src.auto_poll import format_wait, next_poll
 from src.ledger_bridge import base_url, is_configured
-from src.sage_sdk_write import TEST_COMPANY, authorize_sage_access
+from src.sage_sdk_write import (
+    TEST_COMPANY,
+    authorize_sage_access,
+    delete_ah_invoices,
+    probe_sage_items,
+    run_full_sage_probe,
+)
+from src.sage_retry import (
+    failed_confirm_text,
+    failed_count,
+    pending_cards,
+    retry_failed_invoices,
+)
 from src.session_log import append as append_session_log
 from src.session_log import open_folder as open_logs_folder
+from src.ui_log_state import load as load_ui_log_state
+from src.ui_log_state import save as save_ui_log_state
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -61,22 +79,28 @@ class AutoHubApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Auto-Hub")
-        self.geometry("1020x680")
-        self.minsize(900, 580)
+        self.geometry("1080x720")
+        self.minsize(960, 620)
         self.configure(fg_color=theme.BG_DARK)
 
         self.config = _load_config()
         self._auto_on = False
         self._auto_busy = False
         self._idle_idx = 0
+        self._next_delay_ms = 20_000
         self._log_lock = threading.Lock()
-        self._ev_q: deque[tuple[str, str]] = deque(maxlen=400)
-        self._n_ok = 0
-        self._n_err = 0
-        self._n_skip = 0
-        self._ok_lines: deque[str] = deque(maxlen=12)
-        self._err_lines: deque[str] = deque(maxlen=12)
+        self._ev_q: deque[tuple[str, str]] = deque()
+        saved_logs = load_ui_log_state(ROOT)
+        self._n_ok = int(saved_logs["ok"])
+        self._n_err = int(saved_logs["err"])
+        self._n_skip = int(saved_logs["skip"])
+        self._cards: deque[dict] = deque(saved_logs["cards"])
+        self._skip_next_err = False
         self._current = ""
+        self._last_err_text = ""
+        self._last_card_text = ""
+        self._last_card_at = 0.0
+        self._sage_busy = False
 
         if LOGO_ICO.exists():
             try:
@@ -88,19 +112,22 @@ class AutoHubApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
         self._build_sidebar()
         self._build_main()
+        self._paint_counts()
+        self._paint_cards()
         self.after(150, self._flush_logs)
         self._log("Sistema listo")
         self._refresh_status()
+        self._refresh_retry_btn()
 
     def _build_sidebar(self) -> None:
         sidebar = glass_card(self, radius=0, glow=False)
         sidebar.configure(fg_color=theme.BG_SIDEBAR, border_width=0)
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
-        sidebar.configure(width=176)
+        sidebar.configure(width=248)
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=10, pady=(12, 10))
+        brand.pack(fill="x", padx=12, pady=(14, 12))
         logo = ctk.CTkFrame(brand, width=28, height=28, fg_color=theme.ACCENT, corner_radius=6)
         logo.pack(side="left")
         logo.pack_propagate(False)
@@ -111,58 +138,40 @@ class AutoHubApp(ctk.CTk):
             side="left", padx=(8, 0)
         )
 
-        self._nav_log = ctk.CTkButton(
-            sidebar,
-            text="  Que esta pasando",
-            anchor="w",
-            height=32,
-            corner_radius=theme.BENTO_RADIUS_SM,
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-            text_color="white",
-            font=theme.FONT_BODY,
-            command=lambda: None,
-        )
-        self._nav_log.pack(fill="x", padx=8, pady=1)
+        btns = ctk.CTkFrame(sidebar, fg_color="transparent")
+        btns.pack(fill="x", padx=10, pady=(0, 8))
 
-        ctk.CTkButton(
-            sidebar,
-            text="  Actualizar app",
-            anchor="w",
-            height=32,
-            corner_radius=theme.BENTO_RADIUS_SM,
-            fg_color="transparent",
-            hover_color=theme.GLASS_BG_HOVER,
-            text_color=theme.TEXT_SECONDARY,
-            font=theme.FONT_BODY,
-            command=self.on_update_app,
-        ).pack(fill="x", padx=8, pady=1)
+        def side_btn(text: str, command, *, variant: str = "ghost", width: int = 220):
+            widget = btn(
+                btns,
+                text=text,
+                variant=variant,
+                width=width,
+                height=theme.BTN_HEIGHT_LG,
+                command=command,
+            )
+            widget.pack(fill="x", pady=3)
+            return widget
 
-        ctk.CTkButton(
-            sidebar,
-            text="  Ver logs",
-            anchor="w",
-            height=32,
-            corner_radius=theme.BENTO_RADIUS_SM,
-            fg_color="transparent",
-            hover_color=theme.GLASS_BG_HOVER,
-            text_color=theme.TEXT_SECONDARY,
-            font=theme.FONT_BODY,
-            command=self.on_open_logs,
-        ).pack(fill="x", padx=8, pady=1)
+        self.auth_btn = side_btn("Conectar Sage", self.on_authorize_sage, variant="secondary")
+        self.auto_btn = side_btn("Automatico: OFF", self.on_toggle_auto, variant="primary")
+        self.retry_btn = side_btn("Enviar fallidas", self.on_retry_failed, variant="danger")
+        side_btn("Limpiar historial", self._clear_log)
+        side_btn("Actualizar app", self.on_update_app)
+        side_btn("Ver logs", self.on_open_logs)
 
         ctk.CTkLabel(
             sidebar,
             text="LYL 2025-2026",
             text_color=theme.TEXT_MUTED,
             font=theme.FONT_SMALL,
-        ).pack(side="bottom", anchor="w", padx=12, pady=(0, 12))
+        ).pack(side="bottom", anchor="w", padx=14, pady=(0, 14))
 
     def _build_main(self) -> None:
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.grid(row=0, column=1, sticky="nsew", padx=12, pady=12)
         main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(3, weight=1)
+        main.grid_rowconfigure(2, weight=1)
 
         self.status_label = ctk.CTkLabel(
             main,
@@ -173,46 +182,8 @@ class AutoHubApp(ctk.CTk):
         )
         self.status_label.grid(row=0, column=0, sticky="ew")
 
-        actions = glass_card(main, glow=True)
-        actions.grid(row=1, column=0, sticky="ew", pady=(10, 10))
-        inner = ctk.CTkFrame(actions, fg_color="transparent")
-        inner.pack(fill="x", padx=theme.BENTO_PAD, pady=theme.BENTO_PAD)
-
-        row = ctk.CTkFrame(inner, fg_color="transparent")
-        row.pack(fill="x")
-        self.auth_btn = btn(
-            row,
-            text="Conectar Sage",
-            variant="secondary",
-            width=140,
-            height=theme.BTN_HEIGHT_LG,
-            command=self.on_authorize_sage,
-        )
-        self.auth_btn.pack(side="left")
-        self.auto_btn = btn(
-            row,
-            text="Automatico: OFF",
-            variant="primary",
-            width=160,
-            height=theme.BTN_HEIGHT_LG,
-            command=self.on_toggle_auto,
-        )
-        self.auto_btn.pack(side="left", padx=(8, 0))
-        btn(row, text="Limpiar", variant="ghost", width=90, height=theme.BTN_HEIGHT_LG, command=self._clear_log).pack(
-            side="right"
-        )
-
-        ctk.CTkLabel(
-            inner,
-            text="Sage en LYL 2025-2026. Conectar Sage una vez. Automatico ON. Solo desde el 3 sep 2026 entran a Sage. Arriba ves si consulta. A la izquierda las que si cargaron. A la derecha los fallos. Las viejas solo suman en Omitidas.",
-            font=theme.FONT_SMALL,
-            text_color=theme.TEXT_SECONDARY,
-            wraplength=740,
-            justify="left",
-        ).pack(anchor="w", pady=(8, 0))
-
         now = glass_card(main)
-        now.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        now.grid(row=1, column=0, sticky="ew", pady=(10, 10))
         now_in = ctk.CTkFrame(now, fg_color="transparent")
         now_in.pack(fill="x", padx=theme.BENTO_PAD, pady=theme.BENTO_PAD)
         ctk.CTkLabel(
@@ -246,23 +217,46 @@ class AutoHubApp(ctk.CTk):
         counts.pack(fill="x")
         self.count_ok = self._count_chip(counts, "Cargadas", "0", theme.SUCCESS)
         self.count_skip = self._count_chip(counts, "Omitidas", "0", theme.WARNING)
-        self.count_err = self._count_chip(counts, "Fallos", "0", theme.DANGER)
+        self.count_err = self._count_chip(counts, "Pendientes de reenvio", "0", theme.DANGER)
         self.count_ok.pack(side="left")
         self.count_skip.pack(side="left", padx=(8, 0))
         self.count_err.pack(side="left", padx=(8, 0))
 
         lists = ctk.CTkFrame(main, fg_color="transparent")
-        lists.grid(row=3, column=0, sticky="nsew")
+        lists.grid(row=2, column=0, sticky="nsew")
         lists.grid_columnconfigure(0, weight=1)
         lists.grid_columnconfigure(1, weight=1)
         lists.grid_rowconfigure(0, weight=1)
 
-        self.ok_card = self._list_card(lists, "Cargadas en Sage", theme.SUCCESS)
-        self.ok_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self.err_card = self._list_card(lists, "Fallos", theme.DANGER)
-        self.err_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        self.ok_box = self.ok_card._box  # type: ignore[attr-defined]
-        self.err_box = self.err_card._box  # type: ignore[attr-defined]
+        self.ok_host = self._card_column(lists, "Cargadas", theme.SUCCESS)
+        self.ok_host.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.err_host = self._card_column(lists, "Fallidas", theme.DANGER)
+        self.err_host.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+
+    def _card_column(self, parent, title: str, color: str) -> ctk.CTkFrame:
+        wrap = ctk.CTkFrame(parent, fg_color="transparent")
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(
+            wrap,
+            text=title,
+            font=theme.FONT_HEADING,
+            text_color=color,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        host = ctk.CTkScrollableFrame(wrap, fg_color="transparent")
+        host.grid(row=1, column=0, sticky="nsew")
+        empty = ctk.CTkLabel(
+            host,
+            text="Nada aqui aun.",
+            font=theme.FONT_SMALL,
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+        )
+        empty.pack(anchor="w", pady=4)
+        wrap._host = host  # type: ignore[attr-defined]
+        wrap._empty = empty  # type: ignore[attr-defined]
+        return wrap
 
     def _count_chip(self, parent, title: str, value: str, color: str) -> ctk.CTkFrame:
         chip = ctk.CTkFrame(parent, fg_color=theme.GLASS_INPUT, corner_radius=8, border_width=1, border_color=theme.GLASS_BORDER)
@@ -274,26 +268,6 @@ class AutoHubApp(ctk.CTk):
         chip._value = lab  # type: ignore[attr-defined]
         return chip
 
-    def _list_card(self, parent, title: str, accent: str) -> ctk.CTkFrame:
-        card = glass_card(parent)
-        card.grid_columnconfigure(0, weight=1)
-        card.grid_rowconfigure(1, weight=1)
-        head = ctk.CTkFrame(card, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", padx=theme.BENTO_PAD, pady=(theme.BENTO_PAD, 4))
-        ctk.CTkLabel(head, text=title, font=theme.FONT_HEADING, text_color=accent, anchor="w").pack(side="left")
-        box = ctk.CTkTextbox(
-            card,
-            font=theme.FONT_SMALL,
-            corner_radius=theme.BENTO_RADIUS_SM,
-            wrap="word",
-            fg_color=theme.GLASS_INPUT,
-            border_color=theme.GLASS_BORDER,
-        )
-        box.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        box.configure(state="disabled")
-        card._box = box  # type: ignore[attr-defined]
-        return card
-
     def _refresh_status(self) -> None:
         jwt_ok = is_configured(ROOT, self.config)
         cloud = "G Core listo" if jwt_ok else "Falta JWT en config/ledger_bridge.jwt"
@@ -303,14 +277,17 @@ class AutoHubApp(ctk.CTk):
         self._n_ok = 0
         self._n_err = 0
         self._n_skip = 0
-        self._ok_lines.clear()
-        self._err_lines.clear()
+        self._cards.clear()
+        self._skip_next_err = False
         self._current = ""
+        self._last_err_text = ""
+        self._last_card_text = ""
+        self._last_card_at = 0.0
         self._set_live("En espera.")
         self.cycle_label.configure(text="Aun no consulta.")
         self._paint_counts()
-        self._paint_list(self.ok_box, self._ok_lines)
-        self._paint_list(self.err_box, self._err_lines)
+        self._paint_cards()
+        self._save_log_state()
 
     def _set_live(self, text: str) -> None:
         self.live_label.configure(text=text)
@@ -318,14 +295,35 @@ class AutoHubApp(ctk.CTk):
     def _paint_counts(self) -> None:
         self.count_ok._value.configure(text=str(self._n_ok))  # type: ignore[attr-defined]
         self.count_skip._value.configure(text=str(self._n_skip))  # type: ignore[attr-defined]
-        self.count_err._value.configure(text=str(self._n_err))  # type: ignore[attr-defined]
+        self.count_err._value.configure(text=str(getattr(self, "_pending_count", 0)))  # type: ignore[attr-defined]
 
-    def _paint_list(self, box: ctk.CTkTextbox, lines: deque[str]) -> None:
-        box.configure(state="normal")
-        box.delete("1.0", "end")
-        if lines:
-            box.insert("1.0", "\n".join(lines))
-        box.configure(state="disabled")
+    def _save_log_state(self) -> None:
+        try:
+            save_ui_log_state(
+                ROOT,
+                ok=self._n_ok,
+                err=self._n_err,
+                skip=self._n_skip,
+                cards=self._cards,
+            )
+        except Exception:
+            pass
+
+    def _paint_column(self, column: ctk.CTkFrame, payloads: list[dict], empty_text: str, groups=None) -> None:
+        panel = getattr(column, "_history_panel", None)
+        if panel is None:
+            panel = column._history_panel = HistoryPanel(column._host)
+        panel.update(groups if groups is not None else [("Historial", payloads)])
+
+    def _paint_cards(self) -> None:
+        ok_cards = [c for c in self._cards if c.get("ok")]
+        err_cards = [c for c in self._cards if not c.get("ok")]
+        self._paint_column(self.ok_host, ok_cards, "Sin facturas cargadas.")
+        pending = pending_cards(ROOT)
+        self._paint_column(self.err_host, err_cards, "Sin registros.", groups=failure_groups(self._cards, pending))
+        self._pending_count = len(pending)
+        self.count_err._value.configure(text=str(len(pending)))
+        self.retry_btn.configure(text=f"Reenviar fallidas ({len(pending)})")
 
     def _log(self, msg: str) -> None:
         self._log_from_thread(msg)
@@ -334,12 +332,25 @@ class AutoHubApp(ctk.CTk):
         ev = classify(msg)
         if not ev:
             return
+        kind, shown = ev
+        with self._log_lock:
+            if kind == "card":
+                now = time.monotonic()
+                if shown == self._last_card_text and now - self._last_card_at < 5.0:
+                    return
+                self._last_card_text = shown
+                self._last_card_at = now
+            if kind == "err" and shown == self._last_err_text:
+                return
+            if kind == "err":
+                self._last_err_text = shown
+            elif kind in ("ok", "load"):
+                self._last_err_text = ""
+            self._ev_q.append(ev)
         try:
-            append_session_log(ROOT, ev[0], ev[1])
+            append_session_log(ROOT, kind, shown)
         except Exception:
             pass
-        with self._log_lock:
-            self._ev_q.append(ev)
 
     def _flush_logs(self) -> None:
         try:
@@ -369,10 +380,9 @@ class AutoHubApp(ctk.CTk):
         if pending_status:
             events.append(pending_status)
 
-        ok_changed = False
-        err_changed = False
         counts_changed = False
-        stamp = datetime.now().strftime("%H:%M:%S")
+        cards_changed = False
+        refresh_retry = False
         live = ""
         for kind, text in events:
             if kind == "status":
@@ -380,24 +390,54 @@ class AutoHubApp(ctk.CTk):
             elif kind == "load":
                 self._current = text
                 live = "Cargando " + text
-            elif kind == "ok":
-                line = stamp + "  " + (self._current or text)
-                if not self._ok_lines or self._ok_lines[-1] != line:
-                    self._ok_lines.append(line)
+                self._skip_next_err = False
+            elif kind == "card":
+                data = parse_invoice_card(text)
+                if not data:
+                    continue
+                self._cards.append(data)
+                cards_changed = True
+                if data.get("ok"):
                     self._n_ok += 1
-                    ok_changed = True
-                    counts_changed = True
+                    live = "Cargada: " + str(data.get("ref") or self._current or text)
+                    self._skip_next_err = False
+                else:
+                    self._n_err += 1
+                    live = "Fallo: " + str(data.get("ref") or data.get("detail") or text)
+                    self._skip_next_err = True
+                    refresh_retry = True
+                counts_changed = True
+                self._current = ""
+            elif kind == "ok":
                 live = "Cargada: " + (self._current or text)
                 self._current = ""
+                self._skip_next_err = False
+                refresh_retry = True
             elif kind == "err":
-                line = stamp + "  " + text
-                if not self._err_lines or self._err_lines[-1] != line:
-                    self._err_lines.append(line)
-                    self._n_err += 1
-                    err_changed = True
-                    counts_changed = True
                 live = "Fallo: " + text
+                failed_ref = self._current
                 self._current = ""
+                refresh_retry = True
+                if self._skip_next_err:
+                    continue
+                if not failed_ref:
+                    continue
+                self._cards.append(
+                    {
+                        "ok": False,
+                        "ref": (failed_ref or "Factura").split(" · ")[0],
+                        "date": "",
+                        "customer_id": "",
+                        "customer_name": "",
+                        "total": "",
+                        "detail": text,
+                        "lines": [],
+                    }
+                )
+                self._n_err += 1
+                self._skip_next_err = True
+                cards_changed = True
+                counts_changed = True
             elif kind == "skip":
                 n = 1
                 for part in text.split():
@@ -407,14 +447,19 @@ class AutoHubApp(ctk.CTk):
                 self._n_skip += n
                 counts_changed = True
                 live = text
+                low = text.lower()
+                if "esperando items" in low or "en cola" in low or "fallida" in low:
+                    refresh_retry = True
         if live:
             self._set_live(live)
         if counts_changed:
             self._paint_counts()
-        if ok_changed:
-            self._paint_list(self.ok_box, self._ok_lines)
-        if err_changed:
-            self._paint_list(self.err_box, self._err_lines)
+        if cards_changed:
+            self._paint_cards()
+        if counts_changed or cards_changed:
+            self._save_log_state()
+        if refresh_retry:
+            self._refresh_retry_btn()
 
     def on_toggle_auto(self) -> None:
         self._auto_on = not self._auto_on
@@ -427,23 +472,37 @@ class AutoHubApp(ctk.CTk):
                 self._log("Sin JWT de Ledger Bridge. Pon config/ledger_bridge.jwt")
             self._log("Sage debe quedar abierto en LYL.")
             self._idle_idx = 0
+            self._next_delay_ms = 20_000
             self._schedule_auto(immediate=True)
         else:
+            timer = getattr(self, "_auto_timer", None)
+            if timer:
+                self.after_cancel(timer)
+                self._auto_timer = None
             self._log("Modo automatico OFF")
+            self.cycle_label.configure(text="Terminando consulta en curso; no se programaran mas." if self._auto_busy else "Automatico apagado. Sin consultas programadas.")
 
     def _schedule_auto(self, immediate: bool = False) -> None:
         if not self._auto_on:
             return
-        delays = (12000, 20000, 30000, 45000)
-        delay = 400 if immediate else delays[min(self._idle_idx, len(delays) - 1)]
-        self.after(delay, self._auto_tick)
+        delay = 400 if immediate else max(1, int(self._next_delay_ms))
+        old = getattr(self, "_auto_timer", None)
+        if old:
+            self.after_cancel(old)
+        self._auto_timer = self.after(delay, self._auto_tick)
 
     def _auto_tick(self) -> None:
+        self._auto_timer = None
         if not self._auto_on:
             return
         if self._auto_busy:
             return
+        if self._sage_busy:
+            self._schedule_auto()
+            return
         self._auto_busy = True
+        self._set_live("Consultando y procesando pendientes...")
+        self.cycle_label.configure(text="Consulta en curso.")
 
         def worker() -> None:
             import time
@@ -467,21 +526,30 @@ class AutoHubApp(ctk.CTk):
         self._auto_busy = False
         if error:
             self._log("ERROR automatico: " + error)
-            self._idle_idx = 0
-        elif stats and (stats.get("sent") or stats.get("failed") or stats.get("skipped")):
-            self._idle_idx = 0
-        else:
-            self._idle_idx = min(self._idle_idx + 1, 3)
-        self._set_cycle_summary(stats, error, elapsed)
+        self._idle_idx, self._next_delay_ms, reason = next_poll(self._idle_idx, stats, error)
+        self._set_cycle_summary(stats, error, elapsed, reason, self._next_delay_ms)
+        self._refresh_retry_btn()
         self._schedule_auto()
 
-    def _set_cycle_summary(self, stats: dict | None, error: str, elapsed: float) -> None:
+    def _set_cycle_summary(
+        self,
+        stats: dict | None,
+        error: str,
+        elapsed: float,
+        reason: str = "empty",
+        delay_ms: int = 0,
+    ) -> None:
         hhmm = datetime.now().strftime("%H:%M")
         sec = str(round(elapsed, 1)) + " s"
+        wait = format_wait(delay_ms) if delay_ms else ""
         if error:
-            summary = "Ultima consulta " + hhmm + " · " + sec + " · error"
+            summary = "Ultima consulta " + hhmm + " · " + sec + " · error · reintento en " + wait
+        elif stats and stats.get("blocked"):
+            summary = "Ultima consulta " + hhmm + " · bloqueada: revisa Sage y la conexion · reintento en " + wait
+        elif stats and stats.get("cloud_empty"):
+            summary = "Ultima consulta " + hhmm + " · " + sec + " · cola vacia · proxima en " + wait
         elif not stats or not (stats.get("sent") or stats.get("failed") or stats.get("skipped")):
-            summary = "Ultima consulta " + hhmm + " · " + sec + " · cola vacia"
+            summary = "Ultima consulta " + hhmm + " · " + sec + " · sin facturas procesadas · proxima en " + wait
         else:
             bits: list[str] = []
             sent = int(stats.get("sent") or 0)
@@ -493,7 +561,10 @@ class AutoHubApp(ctk.CTk):
                 bits.append(str(skipped) + " omitidas")
             if failed:
                 bits.append(str(failed) + (" fallo" if failed == 1 else " fallos"))
-            summary = "Ultima consulta " + hhmm + " · " + sec + " · " + ", ".join(bits)
+            extra = " · reintento en " + wait if reason == "error" else " · proxima en " + wait
+            summary = "Ultima consulta " + hhmm + " · " + sec + " · " + ", ".join(bits) + extra
+        if not self._auto_on:
+            summary = summary.split(" · proxima en ")[0].split(" · reintento en ")[0] + " · Automatico apagado"
         self.cycle_label.configure(text=summary)
 
     def on_open_logs(self) -> None:
@@ -502,17 +573,265 @@ class AutoHubApp(ctk.CTk):
         except Exception as exc:
             show_error(self, "Logs", str(exc))
 
-    def on_authorize_sage(self) -> None:
-        if not ask_confirm(
-            self,
-            "Conectar Sage",
-            "1. Abre Sage 50\n"
-            "2. Entra a LYL CONSTRUCTIONS SUPPLY INC 2025-2026\n"
-            "3. Pulsa Confirmar y, cuando Sage pregunte, elige Always Allow",
-        ):
+    def _set_sage_btns(self, busy: bool) -> None:
+        self._sage_busy = busy
+        state = "disabled" if busy else "normal"
+        try:
+            self.auth_btn.configure(state=state)
+            self.retry_btn.configure(state=state)
+        except Exception:
+            pass
+
+    def _refresh_retry_btn(self) -> None:
+        self._paint_cards()
+
+    def on_retry_failed(self) -> None:
+        if self._sage_busy:
             return
+        if self._auto_busy:
+            show_info(self, "Reenviar fallidas", "Espera a que termine la consulta en curso.")
+            return
+        if self._auto_on:
+            show_error(self, "Enviar fallidas", "Pon Automatico OFF antes de reenviar.")
+            return
+        n = failed_count(ROOT)
+        if n < 1:
+            show_info(self, "Enviar fallidas", "No hay facturas esperando items.")
+            return
+        try:
+            if not ask_confirm(self, "Enviar fallidas", failed_confirm_text(ROOT)):
+                return
+        except Exception as exc:
+            show_error(self, "Enviar fallidas", str(exc))
+            return
+        self._set_sage_btns(True)
+        self._log("Reenviando facturas fallidas...")
+
+        def worker() -> None:
+            try:
+                stats = retry_failed_invoices(ROOT, on_log=self._log_from_thread)
+                msg = (
+                    "Cargadas "
+                    + str(stats.get("sent") or 0)
+                    + ". Siguen "
+                    + str(stats.get("remaining") or 0)
+                    + "."
+                )
+                self.after(0, self._on_retry_done, True, msg)
+            except Exception as exc:
+                self.after(0, self._on_retry_done, False, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_retry_done(self, ok: bool, message: str) -> None:
+        self._set_sage_btns(False)
+        self._refresh_retry_btn()
+        self._log(message)
+        if ok:
+            show_info(self, "Enviar fallidas", message)
+        else:
+            show_error(self, "Enviar fallidas", message)
+
+    def on_probe_items(self) -> None:
+        if self._sage_busy:
+            return
+        if self._auto_on:
+            show_error(self, "Probar items", "Pon Automatico OFF antes de probar.")
+            return
+        try:
+            if not ask_confirm(
+                self,
+                "Probar items",
+                "Sage tiene que estar abierto en LYL 2025-2026.\n\n"
+                "Esto NO escribe facturas ni crea items.\n"
+                "Solo comprueba que S-020, P-001 y N-001 existan en Sage.",
+            ):
+                return
+        except Exception as exc:
+            show_error(self, "Probar items", str(exc))
+            return
+        self._set_sage_btns(True)
+        self._log("Probando match de items en Sage...")
+
+        def worker() -> None:
+            try:
+                summary = probe_sage_items(ROOT, on_log=self._log_from_thread)
+                self.after(0, self._on_probe_done, True, summary)
+            except Exception as exc:
+                self.after(0, self._on_probe_done, False, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_probe_done(self, ok: bool, message: str) -> None:
+        self._set_sage_btns(False)
+        self._log(message)
+        if ok:
+            show_info(self, "Probar items", message)
+        else:
+            show_error(self, "Probar items", message)
+
+    def on_full_probe(self) -> None:
+        if self._sage_busy:
+            return
+        if self._auto_on:
+            show_error(self, "Prueba full", "Pon Automatico OFF antes de probar.")
+            return
+        try:
+            if not ask_confirm(
+                self,
+                "Prueba full de factura",
+                "Sage tiene que estar abierto en LYL 2025-2026.\n\n"
+                "Crea UNA factura de prueba con:\n"
+                "- cliente nuevo AHT*\n"
+                "- 3 items que YA existen: S-020, P-001, N-001\n"
+                "- 3 lineas, 2 con descuento\n"
+                "- cuenta ventas 4001 y descuento 4031 (Rio)\n"
+                "- ITBMS 7%\n\n"
+                "No crea items nuevos. Si no hay match, Fail 16.\n"
+                "Si Sage la guarda, borra SOLO esa factura AH*-99xxx.\n"
+                "El cliente AHT* queda. Escribe un reporte en logs/.",
+            ):
+                return
+        except Exception as exc:
+            show_error(self, "Prueba full", str(exc))
+            return
+        self._set_sage_btns(True)
+        self._log("Prueba full Sage: cliente nuevo + match S-020/P-001/N-001 + descuento + cuentas...")
+
+        def worker() -> None:
+            try:
+                summary = run_full_sage_probe(ROOT, on_log=self._log_from_thread)
+                self.after(0, self._on_full_probe_done, True, summary)
+            except Exception as err:
+                self.after(0, self._on_full_probe_done, False, str(err))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_full_probe_done(self, ok: bool, message: str) -> None:
+        self._set_sage_btns(False)
+        self._log(message)
+        if ok:
+            show_info(self, "Prueba full", message)
+        else:
+            show_error(self, "Prueba full", message)
+
+    def on_reopen_8012(self) -> None:
+        if self._sage_busy:
+            return
+        if self._auto_on:
+            show_error(self, "Rehacer 12/13", "Pon Automatico OFF.")
+            return
+        try:
+            if not ask_confirm(
+                self,
+                "Rehacer *0008012 y *0008013",
+                "Borra en Sage SOLO las facturas AH que terminan en -08012 y -08013\n"
+                "(INDUSTRIAS METALICAS CARMONA y REFRIPROYECTOS).\n\n"
+                "No toca 8011 ni el resto del lote.\n"
+                "Las quita de enviadas para que Automatico las vuelva a cargar\n"
+                "completas (2 items + descuento 4031 + ITBMS).\n\n"
+                "Sage abierto en LYL 2025-2026. Extractor ya actualizado con SKU.",
+            ):
+                return
+        except Exception as exc:
+            show_error(self, "Rehacer 12/13", str(exc))
+            return
+        self._set_sage_btns(True)
+        self._log("Rehaciendo AH*-08012 y AH*-08013...")
+
+        def worker() -> None:
+            try:
+                stats = delete_ah_invoices(
+                    ROOT,
+                    on_log=self._log_from_thread,
+                    only_seq=["08012", "08013"],
+                )
+                msg = (
+                    "Borradas "
+                    + str(stats.get("deleted") or 0)
+                    + ". Enviadas quitadas "
+                    + str(stats.get("forgotten") or 0)
+                    + ". Pon Automatico ON."
+                )
+                self.after(0, self._on_reopen_done, True, msg)
+            except Exception as exc:
+                self.after(0, self._on_reopen_done, False, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_reopen_done(self, ok: bool, message: str) -> None:
+        self._set_sage_btns(False)
+        self._log(message)
+        if ok:
+            show_info(self, "Rehacer 12/13", message)
+        else:
+            show_error(self, "Rehacer 12/13", message)
+
+    def on_delete_ah(self) -> None:
+        if self._sage_busy:
+            return
+        if self._auto_on:
+            show_error(self, "Borrar AH", "Pon Automatico OFF antes de borrar.")
+            return
+        try:
+            if not ask_confirm(
+                self,
+                "Borrar facturas AH",
+                "Esto borra en Sage TODAS las Sales Invoices cuyo Invoice No. empieza con AH.\n"
+                "Ejemplo: AH110926-C-03380.\n\n"
+                "No toca facturas que no sean de Auto-Hub.\n"
+                "Sage tiene que estar abierto en LYL 2025-2026.\n"
+                "Cierra la lista de facturas si la tienes abierta, o dale Refresh despues.\n\n"
+                "Luego Auto-Hub las puede volver a cargar.",
+            ):
+                return
+        except Exception as exc:
+            show_error(self, "Borrar AH", str(exc))
+            return
+        self._set_sage_btns(True)
+        self._log("Borrando facturas AH de Sage...")
+
+        def worker() -> None:
+            try:
+                stats = delete_ah_invoices(ROOT, on_log=self._log_from_thread)
+                msg = (
+                    "Borradas "
+                    + str(stats.get("deleted") or 0)
+                    + ". Fallos "
+                    + str(stats.get("failed") or 0)
+                    + "."
+                )
+                self.after(0, self._on_delete_ah_done, True, msg)
+            except Exception as exc:
+                self.after(0, self._on_delete_ah_done, False, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_delete_ah_done(self, ok: bool, message: str) -> None:
+        self._set_sage_btns(False)
+        self._log(message)
+        if ok:
+            show_info(self, "Borrar AH", message)
+        else:
+            show_error(self, "Borrar AH", message)
+
+    def on_authorize_sage(self) -> None:
+        if self._sage_busy:
+            return
+        try:
+            if not ask_confirm(
+                self,
+                "Conectar Sage",
+                "1. Abre Sage 50\n"
+                "2. Entra a LYL CONSTRUCTIONS SUPPLY INC 2025-2026\n"
+                "3. Pulsa Confirmar y, cuando Sage pregunte, elige Always Allow",
+            ):
+                return
+        except Exception as exc:
+            show_error(self, "Conectar Sage", str(exc))
+            return
+        self._set_sage_btns(True)
         self._log("Conectando con Sage 50 — esperando Always Allow...")
-        self.auth_btn.configure(state="disabled")
 
         def worker() -> None:
             try:
@@ -524,7 +843,7 @@ class AutoHubApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_sage_done(self, ok: bool, message: str) -> None:
-        self.auth_btn.configure(state="normal")
+        self._set_sage_btns(False)
         self._log(message)
         if ok:
             show_info(self, "Sage 50", message)
