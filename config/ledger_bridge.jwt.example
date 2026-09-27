@@ -1,0 +1,2 @@
+# Pega en ledger_bridge.jwt el JWT injector de G Core (role=injector), una sola linea.
+# Ese archivo no se sube a git.

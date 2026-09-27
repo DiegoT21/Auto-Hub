@@ -178,7 +178,8 @@ def process_extractor_outbox(
                         else:
                             on_log("Factura incompleta, no se carga a Sage: " + falta)
                         stats["failed"] += 1
-                    file_ok = False
+                    # El fallo queda visible; no reprocese indefinidamente el
+                    # mismo archivo local en cada ciclo.
                     continue
                 forget_incomplete(root, inv)
                 on_log("Enviando " + label + " | " + cliente)

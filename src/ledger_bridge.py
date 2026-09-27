@@ -1,4 +1,4 @@
-"""Cola Ledger Bridge: pending → Sage → ack."""
+"""Cola Ledger Bridge: pending → Sage → ack o nack."""
 from __future__ import annotations
 
 import json
@@ -418,7 +418,8 @@ def ack_ids(root: Path, config: dict[str, Any], items: list[dict[str, Any]]) -> 
     received = int(result.get("received") or 0)
     already = int(result.get("alreadyConsumed") or 0)
     ok = status < 400 and result.get("ok") is not False
-    if not ok or (payload and confirmed < 1 and already < 1):
+    accounted = confirmed + already
+    if not ok or (payload and accounted < len(payload)):
         raise RuntimeError(
             "Ledger Bridge ack HTTP "
             + str(status)
@@ -426,10 +427,93 @@ def ack_ids(root: Path, config: dict[str, Any], items: list[dict[str, Any]]) -> 
             + str(confirmed)
             + " received="
             + str(received)
+            + " already="
+            + str(already)
             + " "
             + (raw or str(parsed) or "")[:400]
         )
     result["sent"] = len(payload)
+    return result
+
+
+def cloud_failure(message: str) -> tuple[bool, str]:
+    """(permanent, error) para POST /v1/nack. Transitorio vuelve a pending."""
+    text = " ".join(str(message or "").split())
+    lower = text.lower()
+    transient = (
+        "timeout",
+        "timed out",
+        "tiempo de espera",
+        "connection",
+        "conexion",
+        "conexión",
+        "network",
+        "ocupad",
+        "http 5",
+    )
+    if any(token in lower for token in transient):
+        return False, ("SAGE_TIMEOUT: " + text)[:500]
+    if "cliente" in lower and any(token in lower for token in ("no existe", "no encontr", "no se pudo")):
+        return True, ("MISSING_CUSTOMER: " + text)[:500]
+    if any(token in lower for token in ("faltan ", "item", "sku", "no existe en sage")):
+        return True, ("MISSING_ITEM: " + text)[:500]
+    if "descuento" in lower or "4031" in lower:
+        return True, ("SAGE_DISCOUNT: " + text)[:500]
+    if "itbms" in lower or "incompleta" in lower:
+        return True, ("MANUAL_REVIEW: " + text)[:500]
+    return False, ("SAGE_ERROR: " + text)[:500]
+
+
+def nack_ids(
+    root: Path,
+    config: dict[str, Any],
+    items: list[dict[str, Any]],
+    *,
+    permanent: bool,
+) -> dict[str, Any]:
+    token = load_jwt(root, config)
+    payload = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        bid = str(item.get("branchId") or "").strip()
+        fid = str(item.get("facturaId") or "").strip()
+        key = (bid, fid)
+        if not bid or not fid or key in seen:
+            continue
+        seen.add(key)
+        payload.append(
+            {
+                "branchId": bid,
+                "facturaId": fid,
+                "error": str(item.get("error") or "SAGE_ERROR")[:500],
+            }
+        )
+    empty = {"ok": True, "sent": 0, "released": 0, "permanent": permanent}
+    if not token or not payload:
+        return empty
+    url = base_url(config) + "/v1/nack"
+    status, parsed, raw = _request("POST", url, token, {"items": payload, "permanent": permanent})
+    result = parsed if isinstance(parsed, dict) else {}
+    released = int(result.get("released") or result.get("confirmed") or 0)
+    already = int(result.get("alreadyConsumed") or result.get("alreadyFailed") or 0)
+    ok = status < 400 and result.get("ok") is not False
+    has_count = any(key in result for key in ("released", "confirmed", "alreadyConsumed", "alreadyFailed"))
+    if not ok or (payload and has_count and released + already < 1):
+        raise RuntimeError(
+            "Ledger Bridge nack HTTP "
+            + str(status)
+            + " permanent="
+            + str(permanent).lower()
+            + " released="
+            + str(released)
+            + " "
+            + (raw or str(parsed) or "")[:400]
+        )
+    result["sent"] = len(payload)
+    result["released"] = released
+    result["permanent"] = permanent
     return result
 
 
@@ -482,7 +566,9 @@ def process_ledger_pending(
             + " factura(s) en el mismo lote: "
             + ", ".join(repetidas[:5])
         )
-    done_items: list[dict[str, str]] = []
+    ack_items: list[dict[str, str]] = []
+    nack_permanent: list[dict[str, str]] = []
+    nack_retry: list[dict[str, str]] = []
     floor = min_invoice_date(config)
     old_count = sum(1 for job in jobs if too_old_for_company(job.get("rows") or [], floor))
     if old_count:
@@ -497,8 +583,11 @@ def process_ledger_pending(
             on_log("Preview: " + payload_preview(job.get("raw")))
             stats["skipped"] += 1
             stats["files"] += 1
-            if item.get("branchId") and item.get("facturaId"):
-                done_items.append(item)
+            _queue_nack(
+                nack_permanent,
+                item,
+                "MANUAL_REVIEW: lote incompleto (sin numero o cliente)",
+            )
             continue
         skip_tmp = skip_not_sales_invoice(rows)
         if skip_tmp:
@@ -506,22 +595,23 @@ def process_ledger_pending(
             stats["skipped"] += 1
             stats["files"] += 1
             if item.get("branchId") and item.get("facturaId"):
-                done_items.append(item)
+                ack_items.append(item)
             continue
         sku_err = missing_item_sku(rows)
         if sku_err:
             on_log("ERROR auto " + ack_id + ": " + sku_err)
             stats["failed"] += 1
             stats["files"] += 1
+            permanent, error = cloud_failure(sku_err)
+            _queue_nack(nack_permanent if permanent else nack_retry, item, error)
             continue
         if too_old_for_company(rows, floor):
             stats["skipped"] += 1
             stats["files"] += 1
             if item.get("branchId") and item.get("facturaId"):
-                done_items.append(item)
+                ack_items.append(item)
             continue
         file_ok = True
-        hold_ack = False
         for inv in group_invoices(rows):
             label = str(inv[0].get("factura_id") or inv[0].get("numero_factura") or "?")
             cliente = str(inv[0].get("cliente_nombre") or "")
@@ -540,7 +630,12 @@ def process_ledger_pending(
                         + ", ".join(str(s) for s in (held.get("missing_skus") or []))
                     )
                     stats["skipped"] += 1
-                    hold_ack = True
+                    permanent, error = cloud_failure(
+                        "faltan items en Sage: "
+                        + ", ".join(str(s) for s in (held.get("missing_skus") or []))
+                    )
+                    _queue_nack(nack_permanent if permanent else nack_retry, item, error)
+                    file_ok = False
                     continue
                 falta = pre_sage_block_reason(inv)
                 if falta:
@@ -556,6 +651,8 @@ def process_ledger_pending(
                         else:
                             on_log("Factura incompleta, no se carga a Sage: " + falta)
                         stats["failed"] += 1
+                    permanent, error = cloud_failure(falta)
+                    _queue_nack(nack_permanent if permanent else nack_retry, item, error)
                     file_ok = False
                     continue
                 forget_incomplete(root, inv)
@@ -571,21 +668,64 @@ def process_ledger_pending(
                     + (", ".join(exc.missing) if exc.missing else label)
                 )
                 stats["failed"] += 1
-                hold_ack = True
+                permanent, error = cloud_failure(
+                    "faltan items en Sage: " + (", ".join(exc.missing) if exc.missing else label)
+                )
+                _queue_nack(nack_permanent if permanent else nack_retry, item, error)
+                file_ok = False
             except Exception as exc:
                 on_log("ERROR auto " + label + ": " + str(exc))
                 stats["failed"] += 1
+                permanent, error = cloud_failure(str(exc))
+                _queue_nack(nack_permanent if permanent else nack_retry, item, error)
                 file_ok = False
-        if (file_ok or hold_ack) and item.get("branchId") and item.get("facturaId"):
-            done_items.append(item)
+        if file_ok and item.get("branchId") and item.get("facturaId"):
+            ack_items.append(item)
         stats["files"] += 1
 
-    if done_items:
+    _finish_cloud(root, config, on_log, stats, ack_items, nack_permanent, nack_retry)
+    return stats
+
+
+def _queue_nack(bucket: list[dict[str, str]], item: dict[str, Any], error: str) -> None:
+    if not item.get("branchId") or not item.get("facturaId"):
+        return
+    key = (item["branchId"], item["facturaId"])
+    if any((row.get("branchId"), row.get("facturaId")) == key for row in bucket):
+        return
+    bucket.append(
+        {
+            "branchId": str(item["branchId"]),
+            "facturaId": str(item["facturaId"]),
+            "error": error[:500],
+        }
+    )
+
+
+def _finish_cloud(
+    root: Path,
+    config: dict[str, Any],
+    on_log: Callable[[str], None],
+    stats: dict[str, int],
+    ack_items: list[dict[str, str]],
+    nack_permanent: list[dict[str, str]],
+    nack_retry: list[dict[str, str]],
+) -> None:
+    blocked = {
+        (row.get("branchId"), row.get("facturaId"))
+        for row in nack_permanent + nack_retry
+    }
+    ack_items = [
+        item
+        for item in ack_items
+        if (item.get("branchId"), item.get("facturaId")) not in blocked
+    ]
+    if ack_items:
         try:
-            ack_res = ack_ids(root, config, done_items)
+            ack_res = ack_ids(root, config, ack_items)
             on_log(
                 "Ledger Bridge ack OK: sent="
-                + str(ack_res.get("sent") or len(done_items))
+                + str(ack_res.get("sent") or len(ack_items))
                 + " confirmed="
                 + str(ack_res.get("confirmed") or 0)
                 + " received="
@@ -596,4 +736,19 @@ def process_ledger_pending(
         except Exception as exc:
             on_log("Ledger Bridge ack fallo: " + str(exc))
             stats["failed"] += 1
-    return stats
+    for permanent, batch in ((True, nack_permanent), (False, nack_retry)):
+        if not batch:
+            continue
+        try:
+            nack_res = nack_ids(root, config, batch, permanent=permanent)
+            on_log(
+                "Ledger Bridge nack OK: permanent="
+                + str(permanent).lower()
+                + " sent="
+                + str(nack_res.get("sent") or len(batch))
+                + " released="
+                + str(nack_res.get("released") or 0)
+            )
+        except Exception as exc:
+            on_log("Ledger Bridge nack fallo: " + str(exc))
+            stats["failed"] += 1

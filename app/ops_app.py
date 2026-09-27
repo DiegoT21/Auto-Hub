@@ -156,6 +156,7 @@ class AutoHubApp(ctk.CTk):
         self.auth_btn = side_btn("Conectar Sage", self.on_authorize_sage, variant="secondary")
         self.auto_btn = side_btn("Automatico: OFF", self.on_toggle_auto, variant="primary")
         self.retry_btn = side_btn("Enviar fallidas", self.on_retry_failed, variant="danger")
+        self.delete_btn = side_btn("Borrar AH", self.on_delete_ah)
         side_btn("Limpiar historial", self._clear_log)
         side_btn("Actualizar app", self.on_update_app)
         side_btn("Ver logs", self.on_open_logs)
@@ -579,6 +580,7 @@ class AutoHubApp(ctk.CTk):
         try:
             self.auth_btn.configure(state=state)
             self.retry_btn.configure(state=state)
+            self.delete_btn.configure(state=state)
         except Exception:
             pass
 

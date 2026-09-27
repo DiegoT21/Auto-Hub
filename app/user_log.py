@@ -201,6 +201,13 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
         return cuantas + " vieja(s) marcadas en la nube.", "skip"
     if "pending sin facturas usables" in lower:
         return "La nube mando un dato inutilizable.", "err"
+    if "ledger bridge nack ok" in lower:
+        kind = "permanente" if "permanent=true" in lower else "para reintento"
+        sent = re.search(r"sent=(\d+)", lower)
+        n = sent.group(1) if sent else "?"
+        return "Nube dejo " + n + " factura(s) en fallo " + kind + ".", "status"
+    if "ledger bridge nack fallo" in lower:
+        return "No se pudo reportar el fallo a la nube.", "err"
     if "ledger bridge ack ok" in lower:
         conf = re.search(r"confirmed=(\d+)", lower)
         n = conf.group(1) if conf else "?"
