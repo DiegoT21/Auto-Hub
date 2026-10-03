@@ -190,6 +190,24 @@ function Get-InvoiceDiscount($records) {
     return @{ Amount = (Round-Money $sum); Pct = $pct }
 }
 
+function Test-InfoOnlyLine($rec) {
+    $sku = Get-RecordItemCodigo $rec
+    $price = Get-RecordDecimal $rec "precio_unitario" 0
+    return ($sku -eq "00" -and $price -eq 0)
+}
+
+# PsKloud a veces manda dsctounit aunque precio_unitario ya viene con el descuento aplicado.
+function Test-DiscountInPrice($records, $first) {
+    $subtotal = Get-RecordDecimal $first "subtotal" -1
+    if ($subtotal -lt 0) { return $false }
+    $gross = [decimal]0
+    foreach ($rec in @($records)) {
+        $qty = Get-RecordDecimal $rec "cantidad" 1
+        $gross += Round-Money ($qty * (Round-Money (Get-RecordDecimal $rec "precio_unitario" 0)))
+    }
+    return ([math]::Abs([decimal]($gross - $subtotal)) -le [decimal]0.02)
+}
+
 function Format-DescuentoDesc([decimal]$pct) {
     if ($pct -eq 0) { return "Descuento" }
     $shown = $pct
@@ -3346,6 +3364,20 @@ try {
         if ($records.Count -lt 1) {
             Fail 15 "sample sin lineas de factura: $SampleJson"
         }
+        $infoTexts = @()
+        $kept = @()
+        foreach ($rec in $records) {
+            if (Test-InfoOnlyLine $rec) {
+                $t = Get-RecordText $rec "descripcion"
+                if ($t) { $infoTexts += $t.Trim() }
+                Write-Host ("Linea informativa omitida (codigo 00, precio 0): " + $t)
+            }
+            else { $kept += , $rec }
+        }
+        if ($kept.Count -lt 1) {
+            Fail 15 "factura sin lineas con item (solo lineas informativas codigo 00)"
+        }
+        $records = @($kept)
         $lineChk = 0
         foreach ($rec in $records) {
             $lineChk++
@@ -3558,6 +3590,9 @@ try {
             Set-SageProp $invoice "CustomerPO" $po | Out-Null
         }
         $note = "AH " + $sucTxt + " | PsKloud " + $numeroOrigen + " id=" + (Get-RecordText $first "factura_id")
+        if ($infoTexts.Count -gt 0) {
+            $note = $note + " | " + ($infoTexts -join "; ")
+        }
         if ($createdNewCustomer) {
             $note = "CLIENTE NUEVO | " + $note
         }
@@ -3632,6 +3667,10 @@ try {
         }
 
         $disc = Get-InvoiceDiscount $records
+        if ($disc.Amount -gt 0 -and (Test-DiscountInPrice $records $first)) {
+            Write-Host ("  Descuento " + $disc.Amount + " ya incluido en precio_unitario (subtotal = bruto). No se agrega linea de descuento.")
+            $disc.Amount = [decimal]0
+        }
         if ($disc.Amount -gt 0) {
             $lineNo++
             $line = Add-SageInvoiceLine $invoice $opened
