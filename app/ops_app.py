@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -23,9 +24,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app import theme
-from app.history_panel import HistoryPanel
-from src.failure_view import failure_groups
-from app.components import btn, glass_card, invoice_card
+from src.failure_view import invoice_identity
+from app.components import btn, dashboard_card, fail_summary, glass_card, set_card_selected
 from app.dialogs import ask_confirm, show_error, show_info
 from app.user_log import classify, parse_invoice_card
 from src.app_update import restart_autohub, run_update
@@ -35,8 +35,6 @@ from src.sage_sdk_write import (
     TEST_COMPANY,
     authorize_sage_access,
     delete_ah_invoices,
-    probe_sage_items,
-    run_full_sage_probe,
 )
 from src.sage_retry import (
     failed_confirm_text,
@@ -51,6 +49,35 @@ from src.ui_log_state import save as save_ui_log_state
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
+
+
+def _advice_for(card: dict, summary: str, detail: str) -> tuple[str, str, str]:
+    text = (summary + "\n" + detail).lower()
+    expected = ""
+    received = ""
+    match = re.search(
+        r"factura\s+([0-9]+(?:\.[0-9]+)?).{0,80}?sage\s+([0-9]+(?:\.[0-9]+)?)",
+        detail,
+        re.I | re.S,
+    )
+    if "itbms" in text:
+        if match:
+            received = "$" + match.group(1)
+            expected = "$" + match.group(2)
+        return (
+            "La tasa aplicada difiere de la que Sage va a calcular. Corrígela en el origen antes de volver a enviarla.",
+            expected,
+            received,
+        )
+    if card.get("retryable") or ("item" in text and "sage" in text):
+        return ("Crea el producto faltante en Sage y después usa Reintentar pendientes.", "", "")
+    if "cliente" in text:
+        return ("Revisa el cliente en Sage antes de reenviar la factura.", "", "")
+    if "incomplet" in text or "faltan items" in text:
+        return ("La factura llegó sin todas sus líneas. Corrígelas en el origen; reenviarla ahora va a fallar igual.", "", "")
+    if card.get("ok"):
+        return ("Esta factura ya quedó guardada en Sage.", "", "")
+    return ("Revisa el detalle. Reenviarla sin corregir el dato va a fallar otra vez.", "", "")
 
 LOGO_ICO = ROOT / "assets" / "autohub.ico"
 APP_ID = "Posper.AutoHub.1"
@@ -79,8 +106,9 @@ class AutoHubApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Auto-Hub")
-        self.geometry("1080x720")
-        self.minsize(960, 620)
+        self.geometry("1180x720")
+        self.minsize(1024, 640)
+        self.after(0, self._maximize)
         self.configure(fg_color=theme.BG_DARK)
 
         self.config = _load_config()
@@ -101,6 +129,10 @@ class AutoHubApp(ctk.CTk):
         self._last_card_text = ""
         self._last_card_at = 0.0
         self._sage_busy = False
+        self._view = "all"
+        self._query = ""
+        self._selected_key = None
+        self._selected_card: dict | None = None
 
         if LOGO_ICO.exists():
             try:
@@ -108,10 +140,9 @@ class AutoHubApp(ctk.CTk):
             except Exception:
                 pass
 
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        self._build_sidebar()
-        self._build_main()
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(4, weight=1)
+        self._build_dashboard()
         self._paint_counts()
         self._paint_cards()
         self.after(150, self._flush_logs)
@@ -119,160 +150,306 @@ class AutoHubApp(ctk.CTk):
         self._refresh_status()
         self._refresh_retry_btn()
 
-    def _build_sidebar(self) -> None:
-        sidebar = glass_card(self, radius=0, glow=False)
-        sidebar.configure(fg_color=theme.BG_SIDEBAR, border_width=0)
-        sidebar.grid(row=0, column=0, sticky="nsew")
-        sidebar.grid_propagate(False)
-        sidebar.configure(width=248)
+    def _maximize(self) -> None:
+        try:
+            self.state("zoomed")
+        except Exception:
+            self.attributes("-zoomed", True)
 
-        brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=12, pady=(14, 12))
-        logo = ctk.CTkFrame(brand, width=28, height=28, fg_color=theme.ACCENT, corner_radius=6)
-        logo.pack(side="left")
+    def _build_dashboard(self) -> None:
+        top = ctk.CTkFrame(self, fg_color=theme.BG_SIDEBAR, corner_radius=0, height=44)
+        top.grid(row=0, column=0, sticky="ew")
+        top.grid_propagate(False)
+        brand = ctk.CTkFrame(top, fg_color="transparent")
+        brand.pack(side="left", padx=14)
+        logo = ctk.CTkFrame(brand, width=26, height=26, fg_color=theme.ACCENT, corner_radius=6)
+        logo.pack(side="left", pady=9)
         logo.pack_propagate(False)
-        ctk.CTkLabel(logo, text="AH", font=("Segoe UI", 11, "bold"), text_color="white").place(
+        ctk.CTkLabel(logo, text="AH", font=("Segoe UI", 10, "bold"), text_color="white").place(
             relx=0.5, rely=0.5, anchor="center"
         )
         ctk.CTkLabel(brand, text="Auto-Hub", font=theme.FONT_LOGO, text_color=theme.TEXT_PRIMARY).pack(
             side="left", padx=(8, 0)
         )
+        self.header_sage = ctk.CTkLabel(top, text="", font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY)
+        self.header_sage.pack(side="left", padx=(18, 0))
+        self.header_cloud = ctk.CTkLabel(top, text="", font=theme.FONT_SMALL, text_color=theme.SUCCESS)
+        self.header_cloud.pack(side="left", padx=(12, 0))
 
-        btns = ctk.CTkFrame(sidebar, fg_color="transparent")
-        btns.pack(fill="x", padx=10, pady=(0, 8))
-
-        def side_btn(text: str, command, *, variant: str = "ghost", width: int = 220):
-            widget = btn(
-                btns,
-                text=text,
-                variant=variant,
-                width=width,
-                height=theme.BTN_HEIGHT_LG,
-                command=command,
-            )
-            widget.pack(fill="x", pady=3)
-            return widget
-
-        self.auth_btn = side_btn("Conectar Sage", self.on_authorize_sage, variant="secondary")
-        self.auto_btn = side_btn("Automatico: OFF", self.on_toggle_auto, variant="primary")
-        self.retry_btn = side_btn("Enviar fallidas", self.on_retry_failed, variant="danger")
-        self.delete_btn = side_btn("Borrar AH", self.on_delete_ah)
-        side_btn("Limpiar historial", self._clear_log)
-        side_btn("Actualizar app", self.on_update_app)
-        side_btn("Ver logs", self.on_open_logs)
-
-        ctk.CTkLabel(
-            sidebar,
-            text="LYL 2025-2026",
-            text_color=theme.TEXT_MUTED,
-            font=theme.FONT_SMALL,
-        ).pack(side="bottom", anchor="w", padx=14, pady=(0, 14))
-
-    def _build_main(self) -> None:
-        main = ctk.CTkFrame(self, fg_color="transparent")
-        main.grid(row=0, column=1, sticky="nsew", padx=12, pady=12)
-        main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(2, weight=1)
-
+        action = ctk.CTkFrame(self, fg_color="transparent")
+        action.grid(row=1, column=0, sticky="ew", padx=14, pady=(10, 0))
+        self.auto_btn = btn(
+            action,
+            text="▶  Iniciar automático",
+            variant="primary",
+            width=190,
+            height=36,
+            command=self.on_toggle_auto,
+        )
+        self.auto_btn.pack(side="left")
+        status_box = ctk.CTkFrame(action, fg_color="transparent")
+        status_box.pack(side="left", padx=(12, 0))
+        status_line = ctk.CTkFrame(status_box, fg_color="transparent", height=1)
+        status_line.pack(anchor="w")
         self.status_label = ctk.CTkLabel(
-            main,
+            status_line,
             text="Sage y G Core",
-            font=theme.FONT_HEADING,
+            font=("Segoe UI", 13, "bold"),
             text_color=theme.TEXT_PRIMARY,
-            anchor="w",
         )
-        self.status_label.grid(row=0, column=0, sticky="ew")
-
-        now = glass_card(main)
-        now.grid(row=1, column=0, sticky="ew", pady=(10, 10))
-        now_in = ctk.CTkFrame(now, fg_color="transparent")
-        now_in.pack(fill="x", padx=theme.BENTO_PAD, pady=theme.BENTO_PAD)
-        ctk.CTkLabel(
-            now_in,
-            text="Ahora",
-            font=theme.FONT_SMALL,
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-        ).pack(anchor="w")
+        self.status_label.pack(side="left")
+        self.auto_badge = ctk.CTkLabel(
+            status_line,
+            text="EN PAUSA",
+            font=("Segoe UI", 9, "bold"),
+            text_color="#64748B",
+            fg_color="#F1F5F9",
+            corner_radius=8,
+            height=18,
+            padx=8,
+        )
+        self.auto_badge.pack(side="left", padx=(8, 0))
         self.live_label = ctk.CTkLabel(
-            now_in,
+            status_box,
             text="En espera.",
-            font=theme.FONT_HEADING,
-            text_color=theme.ACCENT,
+            font=theme.FONT_SMALL,
+            text_color=theme.TEXT_SECONDARY,
             anchor="w",
-            wraplength=740,
-            justify="left",
         )
-        self.live_label.pack(anchor="w", pady=(2, 2))
+        self.live_label.pack(anchor="w")
         self.cycle_label = ctk.CTkLabel(
-            now_in,
+            status_box,
             text="Aun no consulta.",
             font=theme.FONT_SMALL,
-            text_color=theme.TEXT_MUTED,
+            text_color=theme.TEXT_SECONDARY,
             anchor="w",
-            wraplength=740,
-            justify="left",
         )
-        self.cycle_label.pack(anchor="w", pady=(0, 8))
-        counts = ctk.CTkFrame(now_in, fg_color="transparent")
-        counts.pack(fill="x")
-        self.count_ok = self._count_chip(counts, "Cargadas", "0", theme.SUCCESS)
-        self.count_skip = self._count_chip(counts, "Omitidas", "0", theme.WARNING)
-        self.count_err = self._count_chip(counts, "Pendientes de reenvio", "0", theme.DANGER)
-        self.count_ok.pack(side="left")
-        self.count_skip.pack(side="left", padx=(8, 0))
-        self.count_err.pack(side="left", padx=(8, 0))
+        self.cycle_label.pack(anchor="w")
 
-        lists = ctk.CTkFrame(main, fg_color="transparent")
-        lists.grid(row=2, column=0, sticky="nsew")
-        lists.grid_columnconfigure(0, weight=1)
-        lists.grid_columnconfigure(1, weight=1)
-        lists.grid_rowconfigure(0, weight=1)
+        self._options_open = False
+        self.options_btn = btn(
+            action,
+            text="Opciones ▾",
+            variant="secondary",
+            width=110,
+            height=32,
+            command=self._toggle_options,
+        )
+        self.options_btn.pack(side="right", padx=(8, 0))
+        self._options_menu = glass_card(self, radius=10)
+        self._options_menu.configure(width=210)
 
-        self.ok_host = self._card_column(lists, "Cargadas", theme.SUCCESS)
+        def menu_btn(text: str, command, *, variant: str = "ghost"):
+            widget = btn(
+                self._options_menu,
+                text=text,
+                variant=variant,
+                height=theme.BTN_HEIGHT,
+                command=lambda: self._run_option(command),
+            )
+            widget.pack(fill="x", padx=8, pady=2)
+            return widget
+
+        menu_btn("Consultar ahora", self.on_poll_now)
+        self.auth_btn = menu_btn("Conectar Sage", self.on_authorize_sage, variant="secondary")
+        self.delete_btn = menu_btn("Borrar AH", self.on_delete_ah)
+        menu_btn("Limpiar historial", self._clear_log)
+        menu_btn("Actualizar app", self.on_update_app)
+        menu_btn("Ver logs", self.on_open_logs)
+
+        stats = ctk.CTkFrame(self, fg_color="transparent")
+        stats.grid(row=2, column=0, sticky="ew", padx=14, pady=(10, 0))
+        for col in range(4):
+            stats.grid_columnconfigure(col, weight=1)
+        self.count_ok = self._stat_card(stats, "Cargadas en Sage", theme.SUCCESS, "✓")
+        self.count_skip = self._stat_card(stats, "Omitidas", theme.TEXT_SECONDARY, "▷")
+        self.count_wait = self._stat_card(stats, "Esperando corrección", theme.WARNING, "◷")
+        self.count_fail = self._stat_card(stats, "Fallidas", theme.DANGER, "!")
+        self.count_ok.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.count_skip.grid(row=0, column=1, sticky="ew", padx=6)
+        self.count_wait.grid(row=0, column=2, sticky="ew", padx=6)
+        self.count_fail.grid(row=0, column=3, sticky="ew", padx=(6, 0))
+
+        tools = ctk.CTkFrame(self, fg_color="transparent")
+        tools.grid(row=3, column=0, sticky="ew", padx=14, pady=(10, 0))
+        self._tab_btns = {}
+        for key, label in (("all", "Todas"), ("ok", "Cargadas"), ("fail", "Fallidas")):
+            tab = btn(
+                tools,
+                text=label,
+                variant="secondary",
+                height=28,
+                width=110,
+                command=lambda k=key: self._set_view(k),
+            )
+            tab.pack(side="left", padx=(0, 6))
+            self._tab_btns[key] = tab
+        self.search_entry = ctk.CTkEntry(
+            tools,
+            placeholder_text="Buscar factura, cliente o ID...",
+            height=28,
+            width=280,
+            fg_color=theme.GLASS_INPUT,
+            border_color=theme.GLASS_BORDER,
+        )
+        self.search_entry.pack(side="left", padx=(8, 0))
+        self.search_entry.bind("<KeyRelease>", lambda _e: self._on_search())
+        self.retry_btn = btn(
+            tools,
+            text="Reintentar pendientes (0)",
+            variant="secondary",
+            height=28,
+            width=190,
+            command=self.on_retry_failed,
+        )
+        self.retry_btn.pack(side="right")
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=4, column=0, sticky="nsew", padx=14, pady=10)
+        body.grid_columnconfigure(0, weight=2)
+        body.grid_columnconfigure(1, weight=3)
+        body.grid_columnconfigure(2, weight=0, minsize=300)
+        body.grid_rowconfigure(0, weight=1)
+        self._body = body
+        self.ok_host = self._scroll_column(body, "Cargadas con éxito")
         self.ok_host.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self.err_host = self._card_column(lists, "Fallidas", theme.DANGER)
-        self.err_host.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.att_host = self._scroll_column(body, "Facturas que requieren atención")
+        self.att_host.grid(row=0, column=1, sticky="nsew", padx=6)
+        self._build_detail(body)
 
-    def _card_column(self, parent, title: str, color: str) -> ctk.CTkFrame:
+        foot = ctk.CTkFrame(self, fg_color=theme.BG_SIDEBAR, corner_radius=0, height=28)
+        foot.grid(row=5, column=0, sticky="ew")
+        foot.grid_propagate(False)
+        self.footer_sage = ctk.CTkLabel(
+            foot, text="Sage: LYL 2025-2026", font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY
+        )
+        self.footer_sage.pack(side="left", padx=14)
+        ctk.CTkLabel(foot, text="Auto-Hub", font=theme.FONT_SMALL, text_color=theme.TEXT_MUTED).pack(
+            side="right", padx=14
+        )
+        self._style_tabs()
+        self._sync_play_button()
+
+    def _stat_card(self, parent, title: str, color: str, icon: str) -> ctk.CTkFrame:
+        box = ctk.CTkFrame(parent, fg_color="#FFFFFF", corner_radius=12, border_width=1, border_color=theme.GLASS_BORDER)
+        ctk.CTkLabel(box, text=title, font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY).pack(
+            anchor="w", padx=12, pady=(8, 0)
+        )
+        row = ctk.CTkFrame(box, fg_color="transparent", height=1)
+        row.pack(fill="x", padx=12, pady=(0, 8))
+        lab = ctk.CTkLabel(row, text="0", font=("Segoe UI", 22, "bold"), text_color=theme.TEXT_PRIMARY)
+        lab.pack(side="left")
+        ctk.CTkLabel(row, text=icon, font=("Segoe UI", 16), text_color=color).pack(side="right")
+        box._value = lab  # type: ignore[attr-defined]
+        return box
+
+    def _scroll_column(self, parent, title: str) -> ctk.CTkFrame:
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
-        wrap.grid_columnconfigure(0, weight=1)
         wrap.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(
-            wrap,
-            text=title,
-            font=theme.FONT_HEADING,
-            text_color=color,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        wrap.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(wrap, text=title, font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY, anchor="w").grid(
+            row=0, column=0, sticky="ew", pady=(0, 4)
+        )
         host = ctk.CTkScrollableFrame(wrap, fg_color="transparent")
         host.grid(row=1, column=0, sticky="nsew")
-        empty = ctk.CTkLabel(
-            host,
-            text="Nada aqui aun.",
-            font=theme.FONT_SMALL,
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-        )
-        empty.pack(anchor="w", pady=4)
         wrap._host = host  # type: ignore[attr-defined]
-        wrap._empty = empty  # type: ignore[attr-defined]
+        wrap._title = wrap.grid_slaves(row=0, column=0)[0]  # type: ignore[attr-defined]
         return wrap
 
-    def _count_chip(self, parent, title: str, value: str, color: str) -> ctk.CTkFrame:
-        chip = ctk.CTkFrame(parent, fg_color=theme.GLASS_INPUT, corner_radius=8, border_width=1, border_color=theme.GLASS_BORDER)
-        inner = ctk.CTkFrame(chip, fg_color="transparent")
-        inner.pack(padx=10, pady=6)
-        ctk.CTkLabel(inner, text=title, font=theme.FONT_SMALL, text_color=theme.TEXT_MUTED).pack(anchor="w")
-        lab = ctk.CTkLabel(inner, text=value, font=theme.FONT_TITLE, text_color=color)
-        lab.pack(anchor="w")
-        chip._value = lab  # type: ignore[attr-defined]
-        return chip
+    def _build_detail(self, parent) -> None:
+        panel = ctk.CTkFrame(parent, fg_color="#FFFFFF", corner_radius=12, border_width=1, border_color=theme.GLASS_BORDER)
+        panel.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        panel.grid_rowconfigure(1, weight=1)
+        panel.grid_columnconfigure(0, weight=1)
+        head = ctk.CTkFrame(panel, fg_color="transparent", height=1)
+        head.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 0))
+        ctk.CTkLabel(head, text="Detalle de la factura", font=("Segoe UI", 13, "bold"), text_color=theme.TEXT_PRIMARY).pack(
+            side="left"
+        )
+        self.detail_kind = ctk.CTkLabel(
+            head, text="", font=("Segoe UI", 9, "bold"), text_color=theme.DANGER, fg_color="#FEF2F2", corner_radius=8, padx=6
+        )
+        self.detail_close = btn(head, text="✕", variant="ghost", width=28, height=24, command=self._clear_selection)
+        self.detail_close.pack(side="right")
+        self.detail_kind.pack(side="right", padx=(0, 6))
+        body = ctk.CTkScrollableFrame(panel, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=8, pady=4)
+        self.detail_body = body
+        self.detail_empty = ctk.CTkLabel(
+            body,
+            text="Selecciona una factura de la lista para ver su detalle.",
+            font=theme.FONT_SMALL,
+            text_color=theme.TEXT_SECONDARY,
+            wraplength=240,
+            justify="left",
+        )
+        self.detail_empty.pack(anchor="w", pady=8)
+
+        content = ctk.CTkFrame(body, fg_color="transparent")
+        self.detail_content = content
+        self.detail_ref = ctk.CTkLabel(content, text="", font=("Segoe UI", 16, "bold"), text_color=theme.TEXT_PRIMARY, anchor="w")
+        self.detail_ref.pack(anchor="w", pady=(4, 2))
+        self.detail_cust = ctk.CTkLabel(content, text="", font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY, anchor="w", justify="left")
+        self.detail_cust.pack(anchor="w", fill="x")
+        self.detail_date = ctk.CTkLabel(content, text="", font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY, anchor="w")
+        self.detail_date.pack(anchor="w")
+
+        advice_box = ctk.CTkFrame(content, fg_color="#F8FAFC", corner_radius=8, border_width=1, border_color=theme.GLASS_BORDER)
+        advice_box.pack(fill="x", pady=(10, 6))
+        self.detail_advice_box = advice_box
+        ctk.CTkLabel(
+            advice_box, text="Acción recomendada", font=("Segoe UI", 11, "bold"), text_color=theme.TEXT_PRIMARY, anchor="w"
+        ).pack(anchor="w", padx=10, pady=(8, 2))
+        self.detail_advice = ctk.CTkLabel(
+            advice_box, text="", font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY, wraplength=200, justify="left", anchor="w"
+        )
+        self.detail_advice.pack(anchor="w", fill="x", padx=10, pady=(0, 8))
+        nums = ctk.CTkFrame(advice_box, fg_color="transparent")
+        self.detail_nums = nums
+        self.detail_values = {}
+        for title in ("ESPERADO", "RECIBIDO"):
+            cell = ctk.CTkFrame(nums, fg_color="#FFFFFF", corner_radius=8, border_width=1, border_color=theme.GLASS_BORDER)
+            cell.pack(side="left", fill="x", expand=True, padx=(0, 6))
+            ctk.CTkLabel(cell, text=title, font=("Segoe UI", 9, "bold"), text_color=theme.TEXT_MUTED).pack(anchor="w", padx=8, pady=(6, 0))
+            value = ctk.CTkLabel(cell, text="", font=("Segoe UI", 13, "bold"), text_color=theme.TEXT_PRIMARY)
+            value.pack(anchor="w", padx=8, pady=(0, 6))
+            self.detail_values[title] = value
+        advice_box.bind("<Configure>", self._wrap_advice)
+
+        ctk.CTkLabel(content, text="Detalle técnico", font=("Segoe UI", 11, "bold"), text_color=theme.TEXT_PRIMARY, anchor="w").pack(
+            anchor="w", pady=(8, 2)
+        )
+        self.detail_tech = ctk.CTkTextbox(
+            content, height=110, wrap="word", fg_color="#0F172A", text_color="#E2E8F0", font=("Cascadia Mono", 10)
+        )
+        self.detail_tech.pack(fill="x")
+        self.detail_data_title = ctk.CTkLabel(
+            content, text="Datos recibidos", font=("Segoe UI", 11, "bold"), text_color=theme.TEXT_PRIMARY, anchor="w"
+        )
+        self.detail_data = ctk.CTkTextbox(
+            content, height=90, wrap="word", fg_color="#0F172A", text_color="#E2E8F0", font=("Cascadia Mono", 10)
+        )
+        self._detail_sig = None
+        foot = ctk.CTkFrame(panel, fg_color="transparent", height=1)
+        foot.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self.detail_retry = btn(
+            foot, text="Reintentar factura", variant="primary", height=32, command=self.on_retry_failed
+        )
+        self.detail_close_btn = btn(
+            foot, text="Cerrar detalle", variant="secondary", width=110, height=32, command=self._clear_selection
+        )
+        self._detail_panel = panel
 
     def _refresh_status(self) -> None:
         jwt_ok = is_configured(ROOT, self.config)
-        cloud = "G Core listo" if jwt_ok else "Falta JWT en config/ledger_bridge.jwt"
-        self.status_label.configure(text="Sage: " + TEST_COMPANY + "  ·  " + cloud)
+        self.header_sage.configure(text="Sage: " + TEST_COMPANY)
+        if jwt_ok:
+            self.header_cloud.configure(text="●  G Core conectado", text_color=theme.SUCCESS)
+            self.status_label.configure(text="Sage y G Core conectados")
+        else:
+            self.header_cloud.configure(text="●  Falta la clave de G Core", text_color=theme.DANGER)
+            self.status_label.configure(text="Falta la clave de G Core")
+        self.footer_sage.configure(text="Sage: " + TEST_COMPANY)
 
     def _clear_log(self) -> None:
         self._n_ok = 0
@@ -284,6 +461,8 @@ class AutoHubApp(ctk.CTk):
         self._last_err_text = ""
         self._last_card_text = ""
         self._last_card_at = 0.0
+        self._selected_key = None
+        self._selected_card = None
         self._set_live("En espera.")
         self.cycle_label.configure(text="Aun no consulta.")
         self._paint_counts()
@@ -291,12 +470,14 @@ class AutoHubApp(ctk.CTk):
         self._save_log_state()
 
     def _set_live(self, text: str) -> None:
-        self.live_label.configure(text=text)
+        shown = "" if text in ("En espera.", "Auto-Hub listo.") else text
+        self.live_label.configure(text=shown)
 
     def _paint_counts(self) -> None:
         self.count_ok._value.configure(text=str(self._n_ok))  # type: ignore[attr-defined]
         self.count_skip._value.configure(text=str(self._n_skip))  # type: ignore[attr-defined]
-        self.count_err._value.configure(text=str(getattr(self, "_pending_count", 0)))  # type: ignore[attr-defined]
+        self.count_wait._value.configure(text=str(getattr(self, "_pending_count", 0)))  # type: ignore[attr-defined]
+        self.count_fail._value.configure(text=str(getattr(self, "_fail_count", 0)))  # type: ignore[attr-defined]
 
     def _save_log_state(self) -> None:
         try:
@@ -310,21 +491,253 @@ class AutoHubApp(ctk.CTk):
         except Exception:
             pass
 
-    def _paint_column(self, column: ctk.CTkFrame, payloads: list[dict], empty_text: str, groups=None) -> None:
-        panel = getattr(column, "_history_panel", None)
-        if panel is None:
-            panel = column._history_panel = HistoryPanel(column._host)
-        panel.update(groups if groups is not None else [("Historial", payloads)])
+    def _lists(self) -> tuple[list[dict], list[dict], list[dict]]:
+        pending = pending_cards(ROOT)
+        for card in pending:
+            card["retryable"] = True
+        queued = {invoice_identity(card) for card in pending}
+        latest: dict = {}
+        order: list = []
+        for card in self._cards:
+            key = invoice_identity(card)
+            if key in latest:
+                order.remove(key)
+            latest[key] = card
+            order.append(key)
+        ok_cards = [latest[key] for key in reversed(order) if latest[key].get("ok")]
+        failed = [latest[key] for key in reversed(order) if not latest[key].get("ok") and key not in queued]
+        return ok_cards, list(reversed(pending)), failed
+
+    def _matches(self, card: dict) -> bool:
+        query = self._query.strip().lower()
+        if not query:
+            return True
+        blob = " ".join(
+            str(card.get(key) or "")
+            for key in ("ref", "customer_name", "customer_id", "detail", "date")
+        ).lower()
+        return query in blob or query in fail_summary(card).lower()
+
+    def _fill_column(self, host, cards: list[dict], empty: str) -> None:
+        cache = getattr(host, "_cards_cache", None)
+        if cache is None:
+            cache = host._cards_cache = {}
+            host._cards_order = []
+            host._empty = ctk.CTkLabel(host, text="", font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY, anchor="w")
+        shown = []
+        seen = set()
+        for card in cards:
+            key = invoice_identity(card)
+            if key in seen or not self._matches(card):
+                continue
+            seen.add(key)
+            shown.append((key, card))
+        for key in list(cache):
+            if key not in seen:
+                cache.pop(key)[1].destroy()
+        rebuilt = False
+        for key, card in shown:
+            tone = "ok" if card.get("ok") else ("wait" if card.get("retryable") else "fail")
+            sig = tone + json.dumps(card, sort_keys=True, ensure_ascii=False, default=str)
+            current = cache.get(key)
+            if current and current[0] == sig:
+                continue
+            if current:
+                current[1].destroy()
+            widget = dashboard_card(
+                host,
+                card,
+                tone=tone,
+                selected=key == self._selected_key,
+                on_open=lambda k=key: self._show_detail(k),
+                on_solution=(lambda k=key: self._show_detail(k)) if tone == "wait" else None,
+            )
+            cache[key] = (sig, widget, card)
+            rebuilt = True
+        order = [key for key, _ in shown]
+        if rebuilt or order != host._cards_order:
+            for key in host._cards_order:
+                if key in cache:
+                    cache[key][1].pack_forget()
+            for key in order:
+                cache[key][1].pack(fill="x", pady=(0, 6))
+            host._cards_order = order
+        if shown:
+            host._empty.pack_forget()
+        else:
+            host._empty.configure(text=empty)
+            host._empty.pack(anchor="w", pady=6)
+
+    def _card_for(self, key) -> dict | None:
+        for column in (self.ok_host, self.att_host):
+            entry = getattr(column._host, "_cards_cache", {}).get(key)
+            if entry:
+                return entry[2]
+        return None
+
+    def _highlight(self, key, selected: bool) -> None:
+        for column in (self.ok_host, self.att_host):
+            entry = getattr(column._host, "_cards_cache", {}).get(key)
+            if entry:
+                set_card_selected(entry[1], selected)
 
     def _paint_cards(self) -> None:
-        ok_cards = [c for c in self._cards if c.get("ok")]
-        err_cards = [c for c in self._cards if not c.get("ok")]
-        self._paint_column(self.ok_host, ok_cards, "Sin facturas cargadas.")
-        pending = pending_cards(ROOT)
-        self._paint_column(self.err_host, err_cards, "Sin registros.", groups=failure_groups(self._cards, pending))
-        self._pending_count = len(pending)
-        self.count_err._value.configure(text=str(len(pending)))
-        self.retry_btn.configure(text=f"Reenviar fallidas ({len(pending)})")
+        ok_cards, waiting, failed = self._lists()
+        self._pending_count = len(waiting)
+        self._fail_count = len(failed)
+        self._paint_counts()
+        self.retry_btn.configure(text="Reintentar pendientes (" + str(len(waiting)) + ")")
+        self._tab_btns["ok"].configure(text="Cargadas  " + str(len(ok_cards)))
+        self._tab_btns["fail"].configure(text="Fallidas  " + str(len(failed)))
+        view = self._view
+        if view == "ok":
+            self.ok_host.grid()
+            self.att_host.grid_remove()
+            self._fill_column(self.ok_host._host, ok_cards, "Sin facturas cargadas.")
+        elif view == "fail":
+            self.ok_host.grid_remove()
+            self.att_host.grid()
+            self._fill_column(self.att_host._host, failed, "Sin facturas fallidas.")
+        else:
+            self.ok_host.grid()
+            self.att_host.grid()
+            self._fill_column(self.ok_host._host, ok_cards, "Sin facturas cargadas.")
+            self._fill_column(
+                self.att_host._host,
+                failed + waiting,
+                "Sin facturas pendientes.",
+            )
+        self.ok_host._title.configure(text="Cargadas con éxito (" + str(len(ok_cards)) + ")")
+        attention = len(failed) + len(waiting)
+        self.att_host._title.configure(
+            text="Facturas que requieren atención ("
+            + str(attention)
+            + ")    "
+            + str(len(waiting))
+            + " para corregir · "
+            + str(len(failed))
+            + " fallidas"
+        )
+        if self._selected_key is not None:
+            fresh = self._card_for(self._selected_key)
+            if fresh is not None:
+                self._selected_card = fresh
+            self._render_detail(self._selected_card)
+
+    def _set_view(self, view: str) -> None:
+        self._view = view
+        self._style_tabs()
+        self._paint_cards()
+
+    def _style_tabs(self) -> None:
+        for key, tab in self._tab_btns.items():
+            if key == self._view:
+                tab.configure(fg_color=theme.ACCENT, text_color="white", border_color=theme.ACCENT)
+            else:
+                tab.configure(fg_color="#FFFFFF", text_color=theme.TEXT_PRIMARY, border_color=theme.GLASS_BORDER)
+
+    def _on_search(self) -> None:
+        self._query = self.search_entry.get()
+        self._paint_cards()
+
+    def _clear_selection(self) -> None:
+        if self._selected_key is not None:
+            self._highlight(self._selected_key, False)
+        self._selected_key = None
+        self._selected_card = None
+        self._render_detail(None)
+
+    def _show_detail(self, key) -> None:
+        card = self._card_for(key)
+        if card is None:
+            return
+        if self._selected_key is not None and self._selected_key != key:
+            self._highlight(self._selected_key, False)
+        self._selected_key = key
+        self._selected_card = card
+        self._highlight(key, True)
+        self._render_detail(card)
+
+    def _scale(self) -> float:
+        try:
+            return float(ctk.ScalingTracker.get_widget_scaling(self))
+        except Exception:
+            return 1.0
+
+    def _wrap_advice(self, event=None) -> None:
+        width = self.detail_advice_box.winfo_width() / self._scale()
+        wrap = max(140, int(width) - 28)
+        if getattr(self, "_advice_wrap", None) != wrap:
+            self._advice_wrap = wrap
+            self.detail_advice.configure(wraplength=wrap)
+            self.detail_cust.configure(wraplength=wrap + 10)
+
+    @staticmethod
+    def _set_text(box: ctk.CTkTextbox, text: str) -> None:
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+
+    def _render_detail(self, card: dict | None) -> None:
+        sig = None if not card else json.dumps(card, sort_keys=True, ensure_ascii=False, default=str)
+        if sig == self._detail_sig:
+            return
+        self._detail_sig = sig
+        if not card:
+            self.detail_content.pack_forget()
+            self.detail_empty.pack(anchor="w", pady=8)
+            self.detail_kind.configure(text="")
+            self.detail_retry.pack_forget()
+            self.detail_close_btn.pack_forget()
+            return
+        self.detail_empty.pack_forget()
+        if not self.detail_content.winfo_manager():
+            self.detail_content.pack(fill="x")
+        retryable = bool(card.get("retryable"))
+        detail = str(card.get("detail") or "").strip()
+        summary = fail_summary(card)
+        kind = "Esperando corrección" if retryable else ("Cargada" if card.get("ok") else "Error de Sage")
+        color = theme.WARNING if retryable else (theme.SUCCESS if card.get("ok") else theme.DANGER)
+        soft = "#FFFBEB" if retryable else ("#ECFDF5" if card.get("ok") else "#FEF2F2")
+        self.detail_kind.configure(text=kind, text_color=color, fg_color=soft)
+        self.detail_ref.configure(text="#" + str(card.get("ref") or "Factura").lstrip("#"))
+        cust = str(card.get("customer_name") or card.get("customer_id") or "Sin cliente")
+        self.detail_cust.configure(text="Cliente:  " + cust)
+        when = str(card.get("date") or "").strip()
+        if when:
+            self.detail_date.configure(text="Fecha/hora:  " + when)
+            if not self.detail_date.winfo_manager():
+                self.detail_date.pack(anchor="w", after=self.detail_cust)
+        else:
+            self.detail_date.pack_forget()
+        advice, expected, received = _advice_for(card, summary, detail)
+        self.detail_advice.configure(text=advice)
+        if expected and received:
+            self.detail_values["ESPERADO"].configure(text=expected)
+            self.detail_values["RECIBIDO"].configure(text=received)
+            if not self.detail_nums.winfo_manager():
+                self.detail_nums.pack(fill="x", padx=10, pady=(0, 8))
+        else:
+            self.detail_nums.pack_forget()
+        self._set_text(self.detail_tech, detail or summary or "Sin detalle técnico.")
+        lines = [ln for ln in (card.get("lines") or []) if isinstance(ln, dict)]
+        if lines:
+            self._set_text(self.detail_data, json.dumps(lines, ensure_ascii=False, indent=2))
+            if not self.detail_data.winfo_manager():
+                self.detail_data_title.pack(anchor="w", pady=(8, 2))
+                self.detail_data.pack(fill="x", pady=(0, 8))
+        else:
+            self.detail_data_title.pack_forget()
+            self.detail_data.pack_forget()
+        if not self.detail_close_btn.winfo_manager():
+            self.detail_close_btn.pack(side="right")
+        if retryable:
+            if not self.detail_retry.winfo_manager():
+                self.detail_retry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        else:
+            self.detail_retry.pack_forget()
+        self._wrap_advice()
 
     def _log(self, msg: str) -> None:
         self._log_from_thread(msg)
@@ -462,9 +875,48 @@ class AutoHubApp(ctk.CTk):
         if refresh_retry:
             self._refresh_retry_btn()
 
+    def _toggle_options(self) -> None:
+        if self._options_open:
+            self._close_options()
+            return
+        self.update_idletasks()
+        # CTk multiplica x/y de place() por el escalado de Windows; se pasan en unidades logicas.
+        scale = self._scale()
+        right = (self.options_btn.winfo_rootx() - self.winfo_rootx() + self.options_btn.winfo_width()) / scale
+        bottom = (self.options_btn.winfo_rooty() - self.winfo_rooty() + self.options_btn.winfo_height()) / scale
+        self._options_menu.place(x=max(8, int(right - 210)), y=int(bottom + 6))
+        self._options_menu.lift()
+        self._options_open = True
+        self.options_btn.configure(text="Opciones ▴")
+
+    def _close_options(self) -> None:
+        if not self._options_open:
+            return
+        self._options_menu.place_forget()
+        self._options_open = False
+        self.options_btn.configure(text="Opciones ▾")
+
+    def _run_option(self, command) -> None:
+        self._close_options()
+        command()
+
+    def _sync_play_button(self) -> None:
+        if self._auto_on:
+            self.auto_btn.configure(text="⏸  Pausar automático")
+            self.auto_badge.configure(text="AUTOMÁTICO ACTIVO", text_color="#047857", fg_color="#D1FAE5")
+        else:
+            self.auto_btn.configure(text="▶  Iniciar automático")
+            self.auto_badge.configure(text="EN PAUSA", text_color="#64748B", fg_color="#F1F5F9")
+
+    def on_poll_now(self) -> None:
+        if self._auto_busy or self._sage_busy:
+            show_info(self, "Consultar ahora", "Espera a que termine la consulta en curso.")
+            return
+        self._begin_cycle()
+
     def on_toggle_auto(self) -> None:
         self._auto_on = not self._auto_on
-        self.auto_btn.configure(text="Automatico: ON" if self._auto_on else "Automatico: OFF")
+        self._sync_play_button()
         if self._auto_on:
             self._log("Modo automatico ON")
             if is_configured(ROOT, self.config):
@@ -481,7 +933,7 @@ class AutoHubApp(ctk.CTk):
                 self.after_cancel(timer)
                 self._auto_timer = None
             self._log("Modo automatico OFF")
-            self.cycle_label.configure(text="Terminando consulta en curso; no se programaran mas." if self._auto_busy else "Automatico apagado. Sin consultas programadas.")
+            self.cycle_label.configure(text="Terminando consulta en curso; no se programaran mas." if self._auto_busy else "En pausa. Sin consultas programadas.")
 
     def _schedule_auto(self, immediate: bool = False) -> None:
         if not self._auto_on:
@@ -501,13 +953,14 @@ class AutoHubApp(ctk.CTk):
         if self._sage_busy:
             self._schedule_auto()
             return
+        self._begin_cycle()
+
+    def _begin_cycle(self) -> None:
         self._auto_busy = True
         self._set_live("Consultando y procesando pendientes...")
         self.cycle_label.configure(text="Consulta en curso.")
 
         def worker() -> None:
-            import time
-
             t0 = time.time()
             try:
                 from src.extractor_inbox import process_extractor_outbox
@@ -565,7 +1018,7 @@ class AutoHubApp(ctk.CTk):
             extra = " · reintento en " + wait if reason == "error" else " · proxima en " + wait
             summary = "Ultima consulta " + hhmm + " · " + sec + " · " + ", ".join(bits) + extra
         if not self._auto_on:
-            summary = summary.split(" · proxima en ")[0].split(" · reintento en ")[0] + " · Automatico apagado"
+            summary = summary.split(" · proxima en ")[0].split(" · reintento en ")[0] + " · En pausa"
         self.cycle_label.configure(text=summary)
 
     def on_open_logs(self) -> None:
@@ -594,7 +1047,7 @@ class AutoHubApp(ctk.CTk):
             show_info(self, "Reenviar fallidas", "Espera a que termine la consulta en curso.")
             return
         if self._auto_on:
-            show_error(self, "Enviar fallidas", "Pon Automatico OFF antes de reenviar.")
+            show_error(self, "Enviar fallidas", "Pon Pausa antes de reenviar.")
             return
         n = failed_count(ROOT)
         if n < 1:
@@ -634,146 +1087,11 @@ class AutoHubApp(ctk.CTk):
         else:
             show_error(self, "Enviar fallidas", message)
 
-    def on_probe_items(self) -> None:
-        if self._sage_busy:
-            return
-        if self._auto_on:
-            show_error(self, "Probar items", "Pon Automatico OFF antes de probar.")
-            return
-        try:
-            if not ask_confirm(
-                self,
-                "Probar items",
-                "Sage tiene que estar abierto en LYL 2025-2026.\n\n"
-                "Esto NO escribe facturas ni crea items.\n"
-                "Solo comprueba que S-020, P-001 y N-001 existan en Sage.",
-            ):
-                return
-        except Exception as exc:
-            show_error(self, "Probar items", str(exc))
-            return
-        self._set_sage_btns(True)
-        self._log("Probando match de items en Sage...")
-
-        def worker() -> None:
-            try:
-                summary = probe_sage_items(ROOT, on_log=self._log_from_thread)
-                self.after(0, self._on_probe_done, True, summary)
-            except Exception as exc:
-                self.after(0, self._on_probe_done, False, str(exc))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_probe_done(self, ok: bool, message: str) -> None:
-        self._set_sage_btns(False)
-        self._log(message)
-        if ok:
-            show_info(self, "Probar items", message)
-        else:
-            show_error(self, "Probar items", message)
-
-    def on_full_probe(self) -> None:
-        if self._sage_busy:
-            return
-        if self._auto_on:
-            show_error(self, "Prueba full", "Pon Automatico OFF antes de probar.")
-            return
-        try:
-            if not ask_confirm(
-                self,
-                "Prueba full de factura",
-                "Sage tiene que estar abierto en LYL 2025-2026.\n\n"
-                "Crea UNA factura de prueba con:\n"
-                "- cliente nuevo AHT*\n"
-                "- 3 items que YA existen: S-020, P-001, N-001\n"
-                "- 3 lineas, 2 con descuento\n"
-                "- cuenta ventas 4001 y descuento 4031 (Rio)\n"
-                "- ITBMS 7%\n\n"
-                "No crea items nuevos. Si no hay match, Fail 16.\n"
-                "Si Sage la guarda, borra SOLO esa factura AH*-99xxx.\n"
-                "El cliente AHT* queda. Escribe un reporte en logs/.",
-            ):
-                return
-        except Exception as exc:
-            show_error(self, "Prueba full", str(exc))
-            return
-        self._set_sage_btns(True)
-        self._log("Prueba full Sage: cliente nuevo + match S-020/P-001/N-001 + descuento + cuentas...")
-
-        def worker() -> None:
-            try:
-                summary = run_full_sage_probe(ROOT, on_log=self._log_from_thread)
-                self.after(0, self._on_full_probe_done, True, summary)
-            except Exception as err:
-                self.after(0, self._on_full_probe_done, False, str(err))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_full_probe_done(self, ok: bool, message: str) -> None:
-        self._set_sage_btns(False)
-        self._log(message)
-        if ok:
-            show_info(self, "Prueba full", message)
-        else:
-            show_error(self, "Prueba full", message)
-
-    def on_reopen_8012(self) -> None:
-        if self._sage_busy:
-            return
-        if self._auto_on:
-            show_error(self, "Rehacer 12/13", "Pon Automatico OFF.")
-            return
-        try:
-            if not ask_confirm(
-                self,
-                "Rehacer *0008012 y *0008013",
-                "Borra en Sage SOLO las facturas AH que terminan en -08012 y -08013\n"
-                "(INDUSTRIAS METALICAS CARMONA y REFRIPROYECTOS).\n\n"
-                "No toca 8011 ni el resto del lote.\n"
-                "Las quita de enviadas para que Automatico las vuelva a cargar\n"
-                "completas (2 items + descuento 4031 + ITBMS).\n\n"
-                "Sage abierto en LYL 2025-2026. Extractor ya actualizado con SKU.",
-            ):
-                return
-        except Exception as exc:
-            show_error(self, "Rehacer 12/13", str(exc))
-            return
-        self._set_sage_btns(True)
-        self._log("Rehaciendo AH*-08012 y AH*-08013...")
-
-        def worker() -> None:
-            try:
-                stats = delete_ah_invoices(
-                    ROOT,
-                    on_log=self._log_from_thread,
-                    only_seq=["08012", "08013"],
-                )
-                msg = (
-                    "Borradas "
-                    + str(stats.get("deleted") or 0)
-                    + ". Enviadas quitadas "
-                    + str(stats.get("forgotten") or 0)
-                    + ". Pon Automatico ON."
-                )
-                self.after(0, self._on_reopen_done, True, msg)
-            except Exception as exc:
-                self.after(0, self._on_reopen_done, False, str(exc))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_reopen_done(self, ok: bool, message: str) -> None:
-        self._set_sage_btns(False)
-        self._log(message)
-        if ok:
-            show_info(self, "Rehacer 12/13", message)
-        else:
-            show_error(self, "Rehacer 12/13", message)
-
     def on_delete_ah(self) -> None:
         if self._sage_busy:
             return
         if self._auto_on:
-            show_error(self, "Borrar AH", "Pon Automatico OFF antes de borrar.")
+            show_error(self, "Borrar AH", "Pon Pausa antes de borrar.")
             return
         try:
             if not ask_confirm(

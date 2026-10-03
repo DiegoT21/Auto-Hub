@@ -43,20 +43,6 @@ def _open_modal(parent: ctk.CTk, window: ctk.CTkToplevel, width: int, height: in
         pass
 
 
-def ask_text(parent: ctk.CTk, title: str, prompt: str, initial: str = "") -> str | None:
-    dialog = ctk.CTkInputDialog(text=prompt, title=title)
-    if initial:
-        try:
-            dialog._entry.insert(0, initial)
-            dialog._entry.select_range(0, "end")
-        except Exception:
-            pass
-    value = dialog.get_input()
-    if value is None or value == "":
-        return None
-    return value
-
-
 def ask_confirm(parent: ctk.CTk, title: str, message: str) -> bool:
     result: list[bool] = [False]
     lines = message.count("\n") + 1
@@ -166,8 +152,4 @@ def show_info(parent: ctk.CTk, title: str, message: str) -> None:
 
 
 def show_error(parent: ctk.CTk, title: str, message: str) -> None:
-    show_info(parent, title, message)
-
-
-def show_warning(parent: ctk.CTk, title: str, message: str) -> None:
     show_info(parent, title, message)

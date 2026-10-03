@@ -153,9 +153,9 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
         return text.split("]", 1)[-1].strip(), "err"
 
     if "modo automatico on" in lower:
-        return "Automatico ON. Buscando facturas.", "status"
+        return "Play. Buscando facturas.", "status"
     if "modo automatico off" in lower:
-        return "Automatico OFF.", "status"
+        return "En pausa.", "status"
     if "revisando sage y la nube" in lower:
         return "Consultando Sage y G Core...", "status"
     if "consultando ledger bridge" in lower:

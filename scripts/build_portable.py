@@ -89,6 +89,7 @@ def prepare_bundle() -> None:
                 "*.exe",
                 "__pycache__",
                 "Lanzador*",
+                "sample_7812*",
             ),
         )
     dest_cfg = BUNDLE / "config"
