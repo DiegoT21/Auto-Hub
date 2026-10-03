@@ -92,7 +92,7 @@ def parse_invoice_card(text: str) -> dict | None:
 def classify(msg: str) -> tuple[str, str] | None:
     """Devuelve (kind, texto) o None para tirar el mensaje.
 
-    kind: status | load | ok | err | skip | card
+    kind: status | load | ok | err | skip | card | progress
     """
     text = (msg or "").strip()
     if not text:
@@ -152,6 +152,8 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
     if lower.startswith("[err]") or lower.startswith("[...]"):
         return text.split("]", 1)[-1].strip(), "err"
 
+    if "consulta forzada" in lower:
+        return "Consulta manual a la cola.", "status"
     if "modo automatico on" in lower:
         return "Play. Buscando facturas.", "status"
     if "modo automatico off" in lower:
@@ -160,6 +162,12 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
         return "Consultando Sage y G Core...", "status"
     if "consultando ledger bridge" in lower:
         return "Consultando G Core...", "status"
+    if lower.startswith("cargando sage ") and "/" in lower:
+        return text.strip(), "progress"
+    if "cola nube:" in lower or lower.startswith("cola nube "):
+        n = re.search(r"(\d+)", text)
+        cuantas = n.group(1) if n else ""
+        return "Cola nube actualizada: " + cuantas + ".", "status"
     if "ledger bridge:" in lower and "lote" in lower:
         n = re.search(r"(\d+)", text)
         cuantas = n.group(1) if n else ""
@@ -316,6 +324,9 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
     if "itbms no cuadra, no se carga a sage" in lower:
         rest = text.split(":", 1)[-1].strip() if ":" in text else text
         return (rest[:220] or "ITBMS de la factura no cuadra con Sage."), "err"
+    if "total no cuadra" in lower:
+        rest = text.split(":", 1)[-1].strip() if ":" in text else text
+        return (rest[:220] or "El total de la factura no cuadra con Sage."), "err"
     if "factura incompleta, no se carga a sage" in lower:
         rest = text.split(":", 1)[-1].strip() if ":" in text else text
         return (rest[:220] or "La factura llego sin todos sus items."), "err"

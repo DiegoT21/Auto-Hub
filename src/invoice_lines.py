@@ -101,6 +101,54 @@ def estimated_sage_itbms(rows: list[dict[str, Any]], *, tax_discount_line: bool 
     return _round_money(tax)
 
 
+def lines_gross_total(rows: list[dict[str, Any]]) -> Decimal:
+    """Suma cantidad * precio_unitario (como escribe RunSageHost por linea)."""
+    total = Decimal("0")
+    for row in rows:
+        qty = _dec(row.get("cantidad"))
+        price = _dec(row.get("precio_unitario"))
+        total += _round_money(qty * price)
+    return _round_money(total)
+
+
+def estimated_sage_total(rows: list[dict[str, Any]], *, tax_discount_line: bool = True) -> Decimal:
+    """Total que Sage tendera a guardar: lineas - descuento + ITBMS."""
+    gross = lines_gross_total(rows)
+    disc_amt, _ = invoice_discount(rows)
+    itbms = estimated_sage_itbms(rows, tax_discount_line=tax_discount_line)
+    return _round_money(gross - disc_amt + itbms)
+
+
+TOTAL_ABS_TOLERANCE = Decimal("0.03")
+
+
+def total_mismatch_reason(rows: list[dict[str, Any]]) -> str:
+    """Vacio si total_factura cuadra con lo que Sage va a calcular (+/- 3 centavos)."""
+    if incomplete_reason(rows):
+        return ""
+    doc_total = _dec((rows[0] if rows else {}).get("total_factura"))
+    if doc_total <= 0:
+        return ""
+    # Solo estimados desde lineas (qty*precio - descuento + ITBMS). No usar
+    # subtotal+itbms del documento: eso es circular y deja pasar totales inflados.
+    candidates = [
+        estimated_sage_total(rows, tax_discount_line=True),
+        estimated_sage_total(rows, tax_discount_line=False),
+    ]
+    if any(abs(doc_total - cand) <= TOTAL_ABS_TOLERANCE for cand in candidates):
+        return ""
+    nearest = min(candidates, key=lambda cand: abs(doc_total - cand))
+    return (
+        "Total no cuadra: factura "
+        + _money(doc_total)
+        + ", estimado Sage "
+        + _money(nearest)
+        + " (dif "
+        + _money(abs(doc_total - nearest))
+        + "). No se carga."
+    )
+
+
 def itbms_mismatch_reason(rows: list[dict[str, Any]]) -> str:
     """Vacío si el ITBMS del documento cuadra con lo que Sage va a calcular."""
     if incomplete_reason(rows):
@@ -136,7 +184,10 @@ def pre_sage_block_reason(rows: list[dict[str, Any]]) -> str:
     missing = incomplete_reason(rows)
     if missing:
         return missing
-    return itbms_mismatch_reason(rows)
+    itbms = itbms_mismatch_reason(rows)
+    if itbms:
+        return itbms
+    return total_mismatch_reason(rows)
 
 
 def incomplete_reason(rows: list[dict[str, Any]]) -> str:

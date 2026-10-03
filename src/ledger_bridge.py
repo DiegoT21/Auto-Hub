@@ -280,6 +280,72 @@ def dump_pending(root: Path, raw: str) -> Path:
     return path
 
 
+def cloud_inbox_dir(root: Path) -> Path:
+    path = root / "state" / "cloud_inbox"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _inbox_job_id(job: dict[str, Any]) -> str:
+    ack = str(job.get("ack_id") or "").strip()
+    if ack:
+        return ack
+    rows = job.get("rows") or []
+    if rows and isinstance(rows[0], dict):
+        return str(rows[0].get("factura_id") or rows[0].get("numero_factura") or "").strip()
+    raw = job.get("raw") if isinstance(job.get("raw"), dict) else {}
+    return str(raw.get("facturaId") or raw.get("factura_id") or "").strip()
+
+
+def _safe_inbox_name(job_id: str) -> str:
+    raw = (job_id or "job").strip() or "job"
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in raw)
+    return safe[:120] or "job"
+
+
+def save_jobs_to_inbox(root: Path, jobs: list[dict[str, Any]]) -> int:
+    inbox = cloud_inbox_dir(root)
+    saved = 0
+    for idx, job in enumerate(jobs):
+        if not isinstance(job, dict):
+            continue
+        job_id = _inbox_job_id(job) or ("job-" + str(idx + 1))
+        path = inbox / (_safe_inbox_name(job_id) + ".json")
+        path.write_text(json.dumps(job, ensure_ascii=False, default=str), encoding="utf-8")
+        saved += 1
+    return saved
+
+
+def list_inbox_jobs(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    inbox = cloud_inbox_dir(root)
+    out: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(inbox.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            out.append((path, data))
+    return out
+
+
+def mark_inbox_done(root: Path, path: Path) -> None:
+    if not path.is_file():
+        return
+    done = cloud_inbox_dir(root) / "done"
+    done.mkdir(parents=True, exist_ok=True)
+    dest = done / path.name
+    if dest.exists():
+        dest = done / (path.stem + "-" + str(int(time.time())) + path.suffix)
+    try:
+        path.replace(dest)
+    except OSError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def _ack_token(item: dict[str, Any]) -> str:
     item = _normalize_record(item) if isinstance(item, dict) else {}
     for key in ("id", "ack_id", "invoice_id", "batch_id", "jti", "facturaId", "factura_id"):
@@ -517,12 +583,23 @@ def nack_ids(
     return result
 
 
+def _empty_stats() -> dict[str, int]:
+    return {"sent": 0, "skipped": 0, "failed": 0, "files": 0, "cloud_empty": 0, "blocked": 0}
+
+
+def _merge_stats(into: dict[str, int], extra: dict[str, int]) -> None:
+    for key in ("sent", "skipped", "failed", "files", "cloud_empty", "blocked"):
+        into[key] = int(into.get(key) or 0) + int(extra.get(key) or 0)
+
+
 def process_ledger_pending(
     root: Path,
     config: dict[str, Any],
     on_log: Callable[[str], None],
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, int]:
-    stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0, "cloud_empty": 0, "blocked": 0}
+    """Inbox residual -> GET pending a state/cloud_inbox -> Sage -> ack/nack."""
+    stats = _empty_stats()
     if not is_configured(root, config):
         on_log("Sin JWT de Ledger Bridge. Pon config/ledger_bridge.jwt")
         stats["blocked"] = 1
@@ -532,6 +609,36 @@ def process_ledger_pending(
         stats["blocked"] = 1
         return stats
 
+    residual = list_inbox_jobs(root)
+    if residual:
+        on_log("Ledger Bridge: " + str(len(residual)) + " lote(s) pendientes")
+        _merge_stats(stats, process_inbox_to_sage(root, config, on_log, on_progress=on_progress))
+
+    n_saved, pull_stats = pull_pending_to_inbox(root, config, on_log)
+    _merge_stats(stats, pull_stats)
+    if n_saved:
+        stats["cloud_empty"] = 0
+        _merge_stats(stats, process_inbox_to_sage(root, config, on_log, on_progress=on_progress))
+    return stats
+
+
+def peek_pending_count(root: Path, config: dict[str, Any]) -> int | None:
+    """Conteo de GET /v1/pending para el chip Cola nube. None si falla JWT o red."""
+    try:
+        if not is_configured(root, config):
+            return None
+        jobs, _raw = fetch_pending(root, config)
+        return len(jobs)
+    except Exception:
+        return None
+
+
+def pull_pending_to_inbox(
+    root: Path,
+    config: dict[str, Any],
+    on_log: Callable[[str], None],
+) -> tuple[int, dict[str, int]]:
+    stats = _empty_stats()
     jobs, raw = fetch_pending(root, config)
     parsed_preview: Any = None
     if raw.strip():
@@ -548,14 +655,15 @@ def process_ledger_pending(
         if empty or not raw or raw.strip() in ("", "[]", "{}", "null"):
             stats["cloud_empty"] = 1
             on_log("Nube sin pendientes. Sigo esperando.")
-            return stats
+            return 0, stats
         dump_path = dump_pending(root, raw)
         on_log("Ledger Bridge pending sin facturas usables. " + payload_preview(parsed_preview))
         on_log("JSON: " + str(dump_path))
-        return stats
+        return 0, stats
 
     dump_path = dump_pending(root, raw)
-    on_log("Ledger Bridge: " + str(len(jobs)) + " lote(s) pendientes")
+    n_saved = save_jobs_to_inbox(root, jobs)
+    on_log("Ledger Bridge: " + str(n_saved) + " lote(s) pendientes")
     on_log("JSON pending: " + str(dump_path))
     keys = [str((job.get("rows") or [{}])[0].get("factura_id") or "") for job in jobs]
     repetidas = sorted({key for key in keys if key and keys.count(key) > 1})
@@ -566,18 +674,64 @@ def process_ledger_pending(
             + " factura(s) en el mismo lote: "
             + ", ".join(repetidas[:5])
         )
+    return n_saved, stats
+
+
+def _progress_steps(entries: list[tuple[Path, dict[str, Any]]], floor: str) -> int:
+    total = 0
+    for _path, job in entries:
+        rows = job.get("rows") or []
+        loadable = (
+            invoice_ready(rows)
+            and not skip_not_sales_invoice(rows)
+            and not missing_item_sku(rows)
+            and not too_old_for_company(rows, floor)
+        )
+        total += max(1, len(group_invoices(rows))) if loadable else 1
+    return max(1, total)
+
+
+def process_inbox_to_sage(
+    root: Path,
+    config: dict[str, Any],
+    on_log: Callable[[str], None],
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, int]:
+    """Carga state/cloud_inbox a Sage. Cada lote cierra con ack o nack en la nube."""
+    stats = _empty_stats()
+    entries = list_inbox_jobs(root)
+    if not entries:
+        return stats
     ack_items: list[dict[str, str]] = []
     nack_permanent: list[dict[str, str]] = []
     nack_retry: list[dict[str, str]] = []
+    handled: list[Path] = []
     floor = min_invoice_date(config)
-    old_count = sum(1 for job in jobs if too_old_for_company(job.get("rows") or [], floor))
+    old_count = sum(1 for _path, job in entries if too_old_for_company(job.get("rows") or [], floor))
     if old_count:
         on_log("Factura vieja: " + str(old_count) + " anteriores a " + floor + ". No se cargan a Sage.")
+    total_steps = _progress_steps(entries, floor)
+    step = 0
 
-    for job in jobs:
-        rows = job["rows"]
+    def tick(label: str) -> None:
+        nonlocal step
+        step += 1
+        if on_progress:
+            on_progress(step, total_steps, label)
+
+    for path, job in entries:
+        handled.append(path)
+        rows = job.get("rows") or []
         ack_id = str(job.get("ack_id") or "")
         item = _ack_item(job, ack_id)
+        loadable = (
+            invoice_ready(rows)
+            and not skip_not_sales_invoice(rows)
+            and not missing_item_sku(rows)
+            and not too_old_for_company(rows, floor)
+        )
+        if not loadable:
+            tick(ack_id or path.stem)
         if not invoice_ready(rows):
             on_log("Lote incompleto (sin numero o cliente). No se envia a Sage.")
             on_log("Preview: " + payload_preview(job.get("raw")))
@@ -615,6 +769,7 @@ def process_ledger_pending(
         for inv in group_invoices(rows):
             label = str(inv[0].get("factura_id") or inv[0].get("numero_factura") or "?")
             cliente = str(inv[0].get("cliente_nombre") or "")
+            tick(label)
             try:
                 already = find_sent_invoice(root, inv)
                 if already:
@@ -648,6 +803,8 @@ def process_ledger_pending(
                         on_log(incomplete_card(inv, falta))
                         if falta.lower().startswith("itbms"):
                             on_log("ITBMS no cuadra, no se carga a Sage: " + falta)
+                        elif falta.lower().startswith("total no cuadra"):
+                            on_log("Total no cuadra, no se carga a Sage: " + falta)
                         else:
                             on_log("Factura incompleta, no se carga a Sage: " + falta)
                         stats["failed"] += 1
@@ -683,7 +840,11 @@ def process_ledger_pending(
             ack_items.append(item)
         stats["files"] += 1
 
-    _finish_cloud(root, config, on_log, stats, ack_items, nack_permanent, nack_retry)
+    # Si la nube no confirmo, los archivos se quedan para el proximo ciclo;
+    # find_sent_invoice evita duplicar en Sage.
+    if _finish_cloud(root, config, on_log, stats, ack_items, nack_permanent, nack_retry):
+        for path in handled:
+            mark_inbox_done(root, path)
     return stats
 
 
@@ -710,7 +871,8 @@ def _finish_cloud(
     ack_items: list[dict[str, str]],
     nack_permanent: list[dict[str, str]],
     nack_retry: list[dict[str, str]],
-) -> None:
+) -> bool:
+    ok = True
     blocked = {
         (row.get("branchId"), row.get("facturaId"))
         for row in nack_permanent + nack_retry
@@ -736,6 +898,7 @@ def _finish_cloud(
         except Exception as exc:
             on_log("Ledger Bridge ack fallo: " + str(exc))
             stats["failed"] += 1
+            ok = False
     for permanent, batch in ((True, nack_permanent), (False, nack_retry)):
         if not batch:
             continue
@@ -752,3 +915,5 @@ def _finish_cloud(
         except Exception as exc:
             on_log("Ledger Bridge nack fallo: " + str(exc))
             stats["failed"] += 1
+            ok = False
+    return ok

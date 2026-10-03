@@ -30,7 +30,7 @@ from app.dialogs import ask_confirm, show_error, show_info
 from app.user_log import classify, parse_invoice_card
 from src.app_update import restart_autohub, run_update
 from src.auto_poll import format_wait, next_poll
-from src.ledger_bridge import base_url, is_configured
+from src.ledger_bridge import base_url, is_configured, peek_pending_count
 from src.sage_sdk_write import (
     TEST_COMPANY,
     authorize_sage_access,
@@ -49,6 +49,8 @@ from src.ui_log_state import save as save_ui_log_state
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
+
+_PENDING_LOTES = re.compile(r"Ledger Bridge: (\d+) lote\(s\) pendientes")
 
 
 def _advice_for(card: dict, summary: str, detail: str) -> tuple[str, str, str]:
@@ -259,16 +261,19 @@ class AutoHubApp(ctk.CTk):
 
         stats = ctk.CTkFrame(self, fg_color="transparent")
         stats.grid(row=2, column=0, sticky="ew", padx=14, pady=(10, 0))
-        for col in range(4):
+        for col in range(5):
             stats.grid_columnconfigure(col, weight=1)
+        self.count_cloud = self._stat_card(stats, "Cola nube", theme.ACCENT, "☁")
         self.count_ok = self._stat_card(stats, "Cargadas en Sage", theme.SUCCESS, "✓")
         self.count_skip = self._stat_card(stats, "Omitidas", theme.TEXT_SECONDARY, "▷")
         self.count_wait = self._stat_card(stats, "Esperando corrección", theme.WARNING, "◷")
         self.count_fail = self._stat_card(stats, "Fallidas", theme.DANGER, "!")
-        self.count_ok.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self.count_skip.grid(row=0, column=1, sticky="ew", padx=6)
-        self.count_wait.grid(row=0, column=2, sticky="ew", padx=6)
-        self.count_fail.grid(row=0, column=3, sticky="ew", padx=(6, 0))
+        self.count_cloud._value.configure(text="—")  # type: ignore[attr-defined]
+        self.count_cloud.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.count_ok.grid(row=0, column=1, sticky="ew", padx=6)
+        self.count_skip.grid(row=0, column=2, sticky="ew", padx=6)
+        self.count_wait.grid(row=0, column=3, sticky="ew", padx=6)
+        self.count_fail.grid(row=0, column=4, sticky="ew", padx=(6, 0))
 
         tools = ctk.CTkFrame(self, fg_color="transparent")
         tools.grid(row=3, column=0, sticky="ew", padx=14, pady=(10, 0))
@@ -472,6 +477,14 @@ class AutoHubApp(ctk.CTk):
     def _set_live(self, text: str) -> None:
         shown = "" if text in ("En espera.", "Auto-Hub listo.") else text
         self.live_label.configure(text=shown)
+
+    def _set_cloud_queue(self, value: int | None) -> None:
+        text = "—" if value is None else str(max(0, int(value)))
+        self.count_cloud._value.configure(text=text)  # type: ignore[attr-defined]
+
+    def _on_sage_progress(self, k: int, n: int, label: str) -> None:
+        self._set_live("Cargando Sage " + str(k) + "/" + str(n) + " · " + label)
+        self._set_cloud_queue(n - k)
 
     def _paint_counts(self) -> None:
         self.count_ok._value.configure(text=str(self._n_ok))  # type: ignore[attr-defined]
@@ -960,6 +973,15 @@ class AutoHubApp(ctk.CTk):
         self._set_live("Consultando y procesando pendientes...")
         self.cycle_label.configure(text="Consulta en curso.")
 
+        def on_log(msg: str) -> None:
+            found = _PENDING_LOTES.search(msg)
+            if found:
+                self.after(0, self._set_cloud_queue, int(found.group(1)))
+            self._log_from_thread(msg)
+
+        def on_progress(k: int, n: int, label: str) -> None:
+            self.after(0, self._on_sage_progress, k, n, label)
+
         def worker() -> None:
             t0 = time.time()
             try:
@@ -968,7 +990,8 @@ class AutoHubApp(ctk.CTk):
                 stats = process_extractor_outbox(
                     ROOT,
                     self.config,
-                    on_log=self._log_from_thread,
+                    on_log=on_log,
+                    on_progress=on_progress,
                 )
                 self.after(0, self._on_auto_cycle, stats, "", time.time() - t0)
             except Exception as exc:
@@ -980,6 +1003,8 @@ class AutoHubApp(ctk.CTk):
         self._auto_busy = False
         if error:
             self._log("ERROR automatico: " + error)
+        elif stats and stats.get("cloud_empty"):
+            self._set_cloud_queue(0)
         self._idle_idx, self._next_delay_ms, reason = next_poll(self._idle_idx, stats, error)
         self._set_cycle_summary(stats, error, elapsed, reason, self._next_delay_ms)
         self._refresh_retry_btn()
@@ -1166,9 +1191,17 @@ class AutoHubApp(ctk.CTk):
         self._set_sage_btns(False)
         self._log(message)
         if ok:
+            self._peek_cloud_queue()
             show_info(self, "Sage 50", message)
         else:
             show_error(self, "Sage 50", message)
+
+    def _peek_cloud_queue(self) -> None:
+        def worker() -> None:
+            count = peek_pending_count(ROOT, self.config)
+            self.after(0, self._set_cloud_queue, count)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_update_app(self) -> None:
         confirm = (

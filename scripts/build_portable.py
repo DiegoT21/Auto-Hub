@@ -49,6 +49,14 @@ La pantalla muestra tres recuadros: lo que esta haciendo ahora, las que cargo en
 Las facturas viejas no llenan la lista: solo suman en Omitidas.
 El detalle del dia (y el dump de Sage si una factura fallo) esta en la carpeta logs junto al exe. Boton Ver logs.
 Solo facturas desde el 3 sep 2026 entran a Sage (mismo piso que el Extractor).
+Consultas automaticas cada 6 horas; boton "Consultar ahora" fuerza una vuelta a la cola.
+
+Tras actualizar (cruce PSK vs Sage)
+----------------------------------
+1. Con Automatico OFF, pulsa "Consultar ahora" para bajar facturas pendientes (19-23 sep).
+2. Revisa Fallidas / Enviar fallidas (prioridad Tropic Star *0008036 si aparece).
+3. No borres facturas AH con monto raro hasta revisar el dump en logs.
+4. Copia state\\sage_failed.json y logs\\ a la carpeta de desarrollo si hace falta diagnosticar.
 """
 
 CONFIG_IGNORE = {
@@ -103,7 +111,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", type=Path, help="Python a usar para compilar")
     parser.add_argument("--skip-install", action="store_true")
-    parser.add_argument("--no-desktop", action="store_true")
+    parser.add_argument(
+        "--copy-outside",
+        action="store_true",
+        help="Tambien copiar ZIPs al Escritorio y a la carpeta padre (Posper).",
+    )
     args = parser.parse_args()
     py = args.python or ROOT / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
@@ -222,23 +234,31 @@ def main() -> None:
     update_zip = ROOT / "dist" / "AutoHub-update.zip"
     shutil.copy2(zip_path, update_zip)
 
-    hub_extrac = ROOT.parent
-    if hub_extrac.is_dir():
-        shutil.copy2(zip_path, hub_extrac / ZIP_NAME)
-        shutil.copy2(update_zip, hub_extrac / "AutoHub-update.zip")
-        print("ZIP en Hub + Extrac:", hub_extrac / ZIP_NAME)
-        print("Update ZIP:", hub_extrac / "AutoHub-update.zip")
+    # Solo en esta carpeta del proyecto. El usuario lo pasa a la PC de Sage.
+    root_anydesk = ROOT / ZIP_NAME
+    root_update = ROOT / "AutoHub-update.zip"
+    shutil.copy2(zip_path, root_anydesk)
+    shutil.copy2(update_zip, root_update)
 
-    desktop = Path.home() / "Desktop"
-    if not desktop.is_dir():
-        desktop = Path.home() / "OneDrive" / "Desktop"
-    if desktop.is_dir() and not args.no_desktop:
-        shutil.copy2(zip_path, desktop / ZIP_NAME)
-        shutil.copy2(update_zip, desktop / "AutoHub-update.zip")
-        print("ZIP en Escritorio:", desktop / ZIP_NAME)
-    print("ZIP dist:", zip_path)
-    print("Carpeta:", DIST)
-    print("Pasa AutoHub-update.zip por AnyDesk a la PC de Sage")
+    if args.copy_outside:
+        hub_extrac = ROOT.parent
+        if hub_extrac.is_dir():
+            shutil.copy2(zip_path, hub_extrac / ZIP_NAME)
+            shutil.copy2(update_zip, hub_extrac / "AutoHub-update.zip")
+            print("ZIP fuera del proyecto:", hub_extrac / ZIP_NAME)
+        desktop = Path.home() / "Desktop"
+        if not desktop.is_dir():
+            desktop = Path.home() / "OneDrive" / "Desktop"
+        if desktop.is_dir():
+            shutil.copy2(zip_path, desktop / ZIP_NAME)
+            shutil.copy2(update_zip, desktop / "AutoHub-update.zip")
+            print("ZIP en Escritorio:", desktop / ZIP_NAME)
+
+    print("ZIP instalacion:", root_anydesk)
+    print("ZIP update:     ", root_update)
+    print("Tambien en:     ", zip_path)
+    print("Carpeta:        ", DIST)
+    print("Pasa AutoHub-update.zip por AnyDesk a la PC de Sage (tu lo mueves).")
 
 
 if __name__ == "__main__":

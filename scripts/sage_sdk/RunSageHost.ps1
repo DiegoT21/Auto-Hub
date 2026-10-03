@@ -261,18 +261,35 @@ function Get-SageStoreGlIds([string]$letter) {
     }
 }
 
+function Get-SageInvoiceSeqDigits([string]$text) {
+    if (-not $text) { return "" }
+    $m = [regex]::Match($text, '(C|\*)(\d{5,})')
+    if ($m.Success) { return $m.Groups[2].Value }
+    $m2 = [regex]::Match($text, '(\d{5,})')
+    if ($m2.Success) { return $m2.Groups[1].Value }
+    return ""
+}
+
 function Get-SageInvoiceSeq($first) {
-    $id = Get-RecordText $first "factura_id"
-    $num = Get-RecordText $first "numero_factura"
-    $blob = ($id + " " + $num)
+    # Preferir documento / cola despues de FAC: — si se busca el primer \d{5,}
+    # en factura_id (000002:001:FAC:00011222) se toma la empresa 000002 y todas
+    # las ADI chocan en AH-fecha-A-00002.
     $digits = ""
-    $m = [regex]::Match($blob, '(C|\*)(\d{5,})')
-    if ($m.Success) {
-        $digits = $m.Groups[2].Value
+    $doc = Get-RecordText $first "documento"
+    if ($doc) {
+        $digits = Get-SageInvoiceSeqDigits $doc
     }
-    else {
-        $m2 = [regex]::Match($blob, '(\d{5,})')
-        if ($m2.Success) { $digits = $m2.Groups[1].Value }
+    if (-not $digits) {
+        $id = Get-RecordText $first "factura_id"
+        if ($id -and $id.Contains(":")) {
+            $tail = $id.Substring($id.LastIndexOf(":") + 1)
+            $digits = Get-SageInvoiceSeqDigits $tail
+        }
+    }
+    if (-not $digits) {
+        $id = Get-RecordText $first "factura_id"
+        $num = Get-RecordText $first "numero_factura"
+        $digits = Get-SageInvoiceSeqDigits ($id + " " + $num)
     }
     if (-not $digits) { $digits = "0" }
     if ($digits.Length -gt 5) { $digits = $digits.Substring($digits.Length - 5) }
@@ -553,14 +570,26 @@ function Find-SageCustomer($company, [string[]]$ids, [string[]]$names, [ref]$all
 
     foreach ($want in $nameSet) {
         if ($want.Length -lt 6) { continue }
+        # Solo prefijo claro: "BUILDERS STEEL CO" vs "BUILDERS STEEL COMPANY".
+        # Contains suelto pegaba JHON OROZCO -> LINA OROZCO y PC SOLUTION -> CM SOLUTION.
+        $prefixHits = @{}
         foreach ($c in $customers) {
             $cn = Normalize-Person $c.Name
-            $cid = Normalize-Person $c.ID
-            if (($cn -and ($cn.Contains($want) -or $want.Contains($cn))) -or
-                ($cid -and ($cid.Contains($want) -or $want.Contains($cid)))) {
-                Write-Host ("  Match por nombre/ID parcial: " + $c.ID + " | " + $c.Name)
-                return $c
+            if (-not $cn) { continue }
+            $shorter = if ($cn.Length -le $want.Length) { $cn } else { $want }
+            $longer = if ($cn.Length -gt $want.Length) { $cn } else { $want }
+            if ($shorter.Length -lt 6) { continue }
+            if ($longer.StartsWith($shorter) -and ($longer.Length -eq $shorter.Length -or $longer[$shorter.Length] -eq [char]' ')) {
+                $prefixHits[$c.ID] = $c
             }
+        }
+        if ($prefixHits.Count -eq 1) {
+            $one = @($prefixHits.Values)[0]
+            Write-Host ("  Match por prefijo de nombre: " + $one.ID + " | " + $one.Name)
+            return $one
+        }
+        if ($prefixHits.Count -gt 1) {
+            Write-Host ("  AVISO prefijo '" + $want + "' coincide con " + $prefixHits.Count + " clientes; no se adivina.")
         }
     }
 
@@ -569,40 +598,15 @@ function Find-SageCustomer($company, [string[]]$ids, [string[]]$names, [ref]$all
         if ($compact.Length -lt 4) { continue }
         foreach ($c in $customers) {
             $cid = ($c.ID -replace "[^0-9A-Za-z]", "")
-            if ($cid -and $cid.IndexOf($compact, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            if ($cid -and [string]::Equals($cid, $compact, [StringComparison]::OrdinalIgnoreCase)) {
                 Write-Host ("  Match por codigo compacto: " + $c.ID + " | " + $c.Name)
                 return $c
             }
         }
     }
 
-    $skipLast = @("SA", "SAS", "SRL", "INC", "LTDA", "CIA", "CO")
-    foreach ($want in $nameSet) {
-        $parts = @($want.Split(" ") | Where-Object { $_ })
-        if ($parts.Count -lt 2) { continue }
-        $last = $parts[-1]
-        if ($last.Length -lt 4 -or $skipLast -contains $last) { continue }
-        $byId = @{}
-        foreach ($c in $customers) {
-            $cn = Normalize-Person $c.Name
-            $cparts = @($cn.Split(" ") | Where-Object { $_ })
-            if ($cparts.Count -ge 1 -and $cparts[-1] -eq $last) {
-                $byId[$c.ID] = $c
-            }
-        }
-        if ($byId.Count -eq 1) {
-            $one = @($byId.Values)[0]
-            Write-Host ("  Match por apellido unico (" + $last + "): " + $one.ID + " | " + $one.Name)
-            return $one
-        }
-        if ($byId.Count -gt 1) {
-            Write-Host ("  AVISO apellido " + $last + " coincide con " + $byId.Count + " clientes Sage; no se adivina.")
-            foreach ($h in $byId.Values) {
-                Write-Host ("    " + $h.ID + " | " + $h.Name)
-            }
-        }
-    }
-
+    # Sin match seguro: el caller crea cliente nuevo. No adivinar por apellido.
+    Write-Host "  Sin match seguro de cliente (ID/nombre exacto o prefijo unico)."
     return $null
 }
 
@@ -3656,6 +3660,28 @@ try {
             }
             $glNote = if ($discGlId) { $discGlId } else { "cliente" }
             Write-Host ("  Linea " + $lineNo + ": qty=" + $qty + " price=" + $price + " amount=" + $amount + " tax=" + $(if ($tax -and $lineTasa -gt 0) { $taxId } else { "no" }) + " gl=" + $glNote + " | " + $desc)
+        }
+
+        $docTotal = [decimal](Get-RecordDecimal $first "total_factura" 0)
+        if ($docTotal -gt 0) {
+            $docItbms = [decimal](Get-RecordDecimal $first "itbms_factura" 0)
+            $estDoc = Round-Money ($netSum + $docItbms)
+            $estCalc = if ($tasaHeader -gt 0) {
+                Round-Money ($netSum + (Round-Money ($netSum * [decimal]$tasaHeader)))
+            } else {
+                Round-Money $netSum
+            }
+            $tol = [decimal]0.03
+            $okTotal = ([math]::Abs([decimal]($docTotal - $estDoc)) -le $tol) -or ([math]::Abs([decimal]($docTotal - $estCalc)) -le $tol)
+            if (-not $okTotal) {
+                Fail 17 (
+                    "Total no cuadra: factura " + $docTotal +
+                    ", lineas netas " + $netSum +
+                    ", estimado " + $estCalc +
+                    " (dif " + [math]::Abs([decimal]($docTotal - $estCalc)) +
+                    "). No se guarda."
+                )
+            }
         }
 
         Write-Host ""

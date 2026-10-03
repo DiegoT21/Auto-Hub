@@ -100,6 +100,7 @@ def process_extractor_outbox(
     root: Path,
     config: dict[str, Any],
     on_log: Callable[[str], None],
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, int]:
     stats = {"sent": 0, "skipped": 0, "failed": 0, "files": 0, "cloud_empty": 0, "blocked": 0}
     folder = outbox_dir(config, root)
@@ -113,7 +114,7 @@ def process_extractor_outbox(
 
     if is_configured(root, config):
         on_log("Consultando Ledger Bridge...")
-        cloud = process_ledger_pending(root, config, on_log)
+        cloud = process_ledger_pending(root, config, on_log, on_progress=on_progress)
         for key in ("sent", "skipped", "failed", "files"):
             stats[key] += int(cloud.get(key) or 0)
         stats["cloud_empty"] = int(cloud.get("cloud_empty") or 0)
@@ -175,6 +176,8 @@ def process_extractor_outbox(
                         on_log(incomplete_card(inv, falta))
                         if falta.lower().startswith("itbms"):
                             on_log("ITBMS no cuadra, no se carga a Sage: " + falta)
+                        elif falta.lower().startswith("total no cuadra"):
+                            on_log("Total no cuadra, no se carga a Sage: " + falta)
                         else:
                             on_log("Factura incompleta, no se carga a Sage: " + falta)
                         stats["failed"] += 1

@@ -943,17 +943,33 @@ namespace AutoHub.SageInvoiceProbe
             return "S";
         }
 
+        private static string SageInvoiceSeqDigits(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            var m = Regex.Match(text, @"(C|\*)(\d{5,})");
+            if (m.Success) return m.Groups[2].Value;
+            m = Regex.Match(text, @"(\d{5,})");
+            return m.Success ? m.Groups[1].Value : "";
+        }
+
         private static string SageInvoiceSeq(Dictionary<string, object> first)
         {
-            var id = GetString(first, "factura_id") ?? "";
-            var num = GetString(first, "numero_factura") ?? "";
-            var blob = id + " " + num;
-            var m = Regex.Match(blob, @"(C|\*)(\d{5,})");
-            var digits = m.Success ? m.Groups[2].Value : "";
+            // Preferir documento / cola despues de FAC: — si se busca el primer
+            // \d{5,} en factura_id (000002:001:FAC:00011222) se toma la empresa
+            // 000002 y todas las ADI chocan en AH-fecha-A-00002.
+            var digits = SageInvoiceSeqDigits(GetString(first, "documento") ?? "");
             if (string.IsNullOrEmpty(digits))
             {
-                m = Regex.Match(blob, @"(\d{5,})");
-                if (m.Success) digits = m.Groups[1].Value;
+                var id = GetString(first, "factura_id") ?? "";
+                var colon = id.LastIndexOf(':');
+                if (colon >= 0 && colon + 1 < id.Length)
+                    digits = SageInvoiceSeqDigits(id.Substring(colon + 1));
+            }
+            if (string.IsNullOrEmpty(digits))
+            {
+                var id = GetString(first, "factura_id") ?? "";
+                var num = GetString(first, "numero_factura") ?? "";
+                digits = SageInvoiceSeqDigits(id + " " + num);
             }
             if (string.IsNullOrEmpty(digits))
                 digits = "0";
