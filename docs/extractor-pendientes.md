@@ -3,11 +3,24 @@
 > Revisión del 3 de octubre de 2026, cruzando PsKloud (`admin000002`, tablas `operti` / `opermv`) contra Sage 50 (`LYL CONSTRUCTIONS SUPPLY INC 2025-2026`) desde el 3 de septiembre de 2026.
 > El Extractor no está en este repo: corre del lado de PsKloud y publica en la cola de G Core (Ledger Bridge) que AutoHub consume.
 
-## Resumen
+## Estado al 3 de octubre de 2026, 18:05
+
+- **Cursor del Extractor: corregido.** El Extractor re-publicó lo que faltaba. AutoHub (`C:\AutoHub`) recibió 25 facturas re-publicadas, las marcó "Ya estaba en Sage. No se duplica." y confirmó las 25 a G Core.
+- **Cruce PsKloud vs Sage** (facturas `FAC` desde el 3 de septiembre): 451 en PsKloud, 438 en Sage y registradas en `state/sage_sent.json`. No queda ninguna factura sin explicación:
+  - 7 en espera de artículos en Sage: `DO14CP` (`*0008089`, `*0008112`, `*0008211`, `C0003441`, `C0003453`), `S-021` (`*0008118`), `CONSTV-018` (`C0003378`).
+  - `00011232`: falta `INS-002` en Sage (no está en la cola de AutoHub; se carga a mano cuando exista).
+  - 5 con datos incoherentes en PsKloud, para revisión de contabilidad (ver punto 4).
+  - `*0008233` está en Sage con la versión vieja (+0.99); se corrige cuando exista `DO14CP`.
+- Los artículos no se pueden crear por SDK (ninguna factory de artículos tiene `Create`); hay que crearlos en Sage, en **Maintain → Inventory Items**, con el mismo código de PsKloud.
+- **Usar solo `C:\AutoHub\AutoHub.exe`.** La instalación vieja (`Desktop\Checkpoint Sage\apk\AutoHub-AnyDesk\AutoHub`) no tiene el registro de lo cargado el 3 de octubre: intentó recargar 26 facturas re-publicadas y Sage las rechazó con "Reference number is not unique" (no se duplicó nada).
+
+Pendiente del punto 1: agregar la reconciliación periódica, para detectar a tiempo si vuelve a faltar algo.
+
+## Resumen (diagnóstico original)
 
 AutoHub carga bien lo que recibe. El problema principal es que **el Extractor no publica todas las facturas en G Core**. Desde el 28 de septiembre casi ninguna factura de Río Abajo llega a la cola. El 3 de octubre se cargaron a mano en Sage 72 facturas que G Core nunca entregó, o que fallaron y no se reintentaron. Mientras el Extractor no se corrija, las facturas nuevas van a seguir faltando.
 
-## 1. Cursor (watermark) compartido entre sucursales — CRÍTICO
+## 1. Cursor (watermark) compartido entre sucursales — CORREGIDO el 3 de octubre
 
 **Síntoma.** Cada día llegan todas las facturas de Coronado (`C…`). De Río Abajo (`*…`) solo llegan las que se emiten antes de la primera factura de Coronado de ese día; después de esa no llega ninguna más. Las de ADI (`000…`) también se pierden.
 
@@ -23,7 +36,7 @@ AutoHub carga bien lo que recibe. El problema principal es que **el Extractor no
 - Comparar con `>=` en el tiempo y deduplicar por clave para no perder facturas creadas en el mismo segundo.
 - Agregar una reconciliación periódica: contar facturas `FAC` por día en `operti` contra lo publicado y re-publicar las que falten.
 
-## 2. Re-publicación (backfill) de lo que faltó
+## 2. Re-publicación (backfill) de lo que faltó — HECHA el 3 de octubre
 
 Las facturas que faltaban hasta el 3 de octubre **ya están en Sage** y registradas en `state/sage_sent.json` de AutoHub (por `factura_id` y por `numero_factura`). Si el Extractor las vuelve a publicar, AutoHub las marca como "Omitidas — Ya en Sage" y no las duplica. Se puede re-publicar desde el 28 de septiembre sin riesgo.
 
@@ -55,4 +68,5 @@ AutoHub ya tolera los dos primeros casos (ver "Cambios en AutoHub"), pero lo cor
 ## Pendientes del lado de AutoHub
 
 - Las facturas que fallan al **crear el cliente** no entran en `sage_failed.json` y no se reintentan. Las 11 del 25–26 de septiembre fallaron con una versión anterior ("Last name, Company name or Address line 1 is required"), ya corregida, y se cargaron a mano.
-- Faltan artículos en Sage para: `DO14CP` (`*0008089`, `*0008112`, `*0008211`, `C0003441`, `C0003453`, `*0008233`), `S-021` (`*0008118`), `CONSTV-018` (`C0003378`), `INS-002` (`00011232`).
+- Faltan artículos en Sage para: `DO14CP` (`*0008089`, `*0008112`, `*0008211`, `C0003441`, `C0003453`, `*0008233`), `S-021` (`*0008118`), `CONSTV-018` (`C0003378`), `INS-002` (`00011232`). `643266` ya se creó y `C0003466` entró el 3 de octubre.
+- El portable (`AutoHub.exe`) trae su propia copia de `RunSageHost.ps1`; hay que regenerarlo desde este repo para no volver a la versión anterior en una actualización.
