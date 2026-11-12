@@ -106,7 +106,7 @@ def main() -> None:
             ):
                 stats = process_ledger_pending(Path(tmp), {}, logs.append)
         assert len(calls) == 1, calls
-        assert len(list_inbox_jobs(Path(tmp))) == 25
+        assert len(list_inbox_jobs(Path(tmp))) == 0
 
     # Cola enorme: tope de tandas y el automatico vuelve en 2 minutos.
     with tempfile.TemporaryDirectory() as tmp:

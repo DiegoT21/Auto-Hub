@@ -883,11 +883,11 @@ def process_inbox_to_sage(
             ack_items.append(item)
         stats["files"] += 1
 
-    # Si la nube no confirmo, los archivos se quedan para el proximo ciclo;
-    # find_sent_invoice evita duplicar en Sage.
-    if _finish_cloud(root, config, on_log, stats, ack_items, nack_permanent, nack_retry):
-        for path in handled:
-            mark_inbox_done(root, path)
+    # Lo no confirmado sigue pendiente en la nube y vuelve en el proximo GET;
+    # find_sent_invoice evita duplicar en Sage. Dejar archivos aqui bloquea la cola.
+    _finish_cloud(root, config, on_log, stats, ack_items, nack_permanent, nack_retry)
+    for path in handled:
+        mark_inbox_done(root, path)
     return stats
 
 
