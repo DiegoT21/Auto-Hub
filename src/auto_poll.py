@@ -1,9 +1,13 @@
-"""Automatico consulta la cola cada 6 horas; Consultar ahora fuerza un ciclo."""
+"""Automatico consulta la cola cada 6 horas; Consultar ahora fuerza un ciclo.
+
+Si el ciclo llego al tope de tandas, la siguiente consulta va en 2 minutos.
+"""
 from __future__ import annotations
 
 from typing import Any
 
 POLL_INTERVAL_MS = 6 * 60 * 60 * 1000
+FOLLOW_UP_MS = 2 * 60 * 1000
 
 
 def format_wait(delay_ms: int) -> str:
@@ -28,15 +32,20 @@ def next_poll(
     stats: dict[str, Any] | None,
     error: str = "",
 ) -> tuple[int, int, str]:
-    """Devuelve (nuevo_idx, delay_ms, motivo) con motivo work|empty|error."""
+    """Devuelve (nuevo_idx, delay_ms, motivo) con motivo work|more|empty|error."""
     del idle_idx
     stats = stats or {}
     failed = int(stats.get("failed") or 0)
     blocked = int(stats.get("blocked") or 0)
     sent = int(stats.get("sent") or 0)
     skipped = int(stats.get("skipped") or 0)
+    more = int(stats.get("more_pending") or 0)
 
-    if error or failed or blocked:
+    if error or blocked:
+        return 0, POLL_INTERVAL_MS, "error"
+    if more:
+        return 0, FOLLOW_UP_MS, "more"
+    if failed:
         return 0, POLL_INTERVAL_MS, "error"
     if sent or skipped:
         return 0, POLL_INTERVAL_MS, "work"

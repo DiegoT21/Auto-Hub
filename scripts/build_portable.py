@@ -50,6 +50,7 @@ Las facturas viejas no llenan la lista: solo suman en Omitidas.
 El detalle del dia (y el dump de Sage si una factura fallo) esta en la carpeta logs junto al exe. Boton Ver logs.
 Solo facturas desde el 3 sep 2026 entran a Sage (mismo piso que el Extractor).
 Consultas automaticas cada 6 horas; boton "Consultar ahora" fuerza una vuelta a la cola.
+Cada consulta trae tandas de 25 hasta vaciar la cola ("Cola vacia: todo cargado").
 
 Tras actualizar (cruce PSK vs Sage)
 ----------------------------------

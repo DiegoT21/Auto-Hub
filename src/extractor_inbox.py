@@ -119,6 +119,7 @@ def process_extractor_outbox(
             stats[key] += int(cloud.get(key) or 0)
         stats["cloud_empty"] = int(cloud.get("cloud_empty") or 0)
         stats["blocked"] = int(cloud.get("blocked") or 0)
+        stats["more_pending"] = int(cloud.get("more_pending") or 0)
 
     pending = list_batch_files(folder)
     if not pending:

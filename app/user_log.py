@@ -168,6 +168,10 @@ def _map(text: str, lower: str) -> tuple[str, str] | None:
         n = re.search(r"(\d+)", text)
         cuantas = n.group(1) if n else ""
         return "Cola nube actualizada: " + cuantas + ".", "status"
+    if lower.startswith("tanda ") and "en cola" in lower:
+        return text.strip(), "status"
+    if "cola vacia: todo cargado" in lower or lower.startswith("tope de "):
+        return text.strip(), "status"
     if "ledger bridge:" in lower and "lote" in lower:
         n = re.search(r"(\d+)", text)
         cuantas = n.group(1) if n else ""

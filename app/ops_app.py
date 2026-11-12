@@ -977,6 +977,8 @@ class AutoHubApp(ctk.CTk):
             found = _PENDING_LOTES.search(msg)
             if found:
                 self.after(0, self._set_cloud_queue, int(found.group(1)))
+            if msg.startswith("Tanda "):
+                self.after(0, lambda: self.cycle_label.configure(text="Consulta en curso · " + msg))
             self._log_from_thread(msg)
 
         def on_progress(k: int, n: int, label: str) -> None:
@@ -1025,7 +1027,9 @@ class AutoHubApp(ctk.CTk):
             summary = "Ultima consulta " + hhmm + " · " + sec + " · error · reintento en " + wait
         elif stats and stats.get("blocked"):
             summary = "Ultima consulta " + hhmm + " · bloqueada: revisa Sage y la conexion · reintento en " + wait
-        elif stats and stats.get("cloud_empty"):
+        elif stats and stats.get("cloud_empty") and not (
+            stats.get("sent") or stats.get("failed") or stats.get("skipped")
+        ):
             summary = "Ultima consulta " + hhmm + " · " + sec + " · cola vacia · proxima en " + wait
         elif not stats or not (stats.get("sent") or stats.get("failed") or stats.get("skipped")):
             summary = "Ultima consulta " + hhmm + " · " + sec + " · sin facturas procesadas · proxima en " + wait
@@ -1040,10 +1044,22 @@ class AutoHubApp(ctk.CTk):
                 bits.append(str(skipped) + " omitidas")
             if failed:
                 bits.append(str(failed) + (" fallo" if failed == 1 else " fallos"))
-            extra = " · reintento en " + wait if reason == "error" else " · proxima en " + wait
+            if stats.get("cloud_empty"):
+                bits.append("cola vacia")
+            if reason == "more":
+                extra = " · quedan en la nube, siguiente tanda en " + wait
+            elif reason == "error":
+                extra = " · reintento en " + wait
+            else:
+                extra = " · proxima en " + wait
             summary = "Ultima consulta " + hhmm + " · " + sec + " · " + ", ".join(bits) + extra
         if not self._auto_on:
-            summary = summary.split(" · proxima en ")[0].split(" · reintento en ")[0] + " · En pausa"
+            summary = (
+                summary.split(" · proxima en ")[0]
+                .split(" · reintento en ")[0]
+                .split(" · quedan en la nube")[0]
+                + " · En pausa"
+            )
         self.cycle_label.configure(text=summary)
 
     def on_open_logs(self) -> None:

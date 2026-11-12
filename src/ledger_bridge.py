@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable
@@ -583,13 +584,28 @@ def nack_ids(
     return result
 
 
+MAX_PULLS_PER_CYCLE = 40
+
+
+_STAT_KEYS = ("sent", "skipped", "failed", "files", "cloud_empty", "blocked", "cleared", "more_pending")
+
+
 def _empty_stats() -> dict[str, int]:
-    return {"sent": 0, "skipped": 0, "failed": 0, "files": 0, "cloud_empty": 0, "blocked": 0}
+    return {key: 0 for key in _STAT_KEYS}
 
 
 def _merge_stats(into: dict[str, int], extra: dict[str, int]) -> None:
-    for key in ("sent", "skipped", "failed", "files", "cloud_empty", "blocked"):
+    for key in _STAT_KEYS:
         into[key] = int(into.get(key) or 0) + int(extra.get(key) or 0)
+
+
+def _batch_progress(
+    on_progress: Callable[[int, int, str], None] | None,
+    batch_no: int,
+) -> Callable[[int, int, str], None] | None:
+    if not on_progress:
+        return None
+    return lambda k, n, label: on_progress(k, n, "Tanda " + str(batch_no) + " · " + label)
 
 
 def process_ledger_pending(
@@ -614,11 +630,38 @@ def process_ledger_pending(
         on_log("Ledger Bridge: " + str(len(residual)) + " lote(s) pendientes")
         _merge_stats(stats, process_inbox_to_sage(root, config, on_log, on_progress=on_progress))
 
-    n_saved, pull_stats = pull_pending_to_inbox(root, config, on_log)
-    _merge_stats(stats, pull_stats)
-    if n_saved:
+    # GET /v1/pending entrega maximo 25 por llamada.
+    seen: set[str] = set()
+    batches = 0
+    for _ in range(MAX_PULLS_PER_CYCLE):
+        n_saved, pull_stats = pull_pending_to_inbox(root, config, on_log)
+        _merge_stats(stats, pull_stats)
+        if not n_saved:
+            break
         stats["cloud_empty"] = 0
-        _merge_stats(stats, process_inbox_to_sage(root, config, on_log, on_progress=on_progress))
+        batches += 1
+        ids = {_inbox_job_id(job) for _path, job in list_inbox_jobs(root)}
+        fresh = ids - seen
+        seen |= ids
+        on_log("Tanda " + str(batches) + ": " + str(n_saved) + " en cola...")
+        batch = process_inbox_to_sage(
+            root, config, on_log, on_progress=_batch_progress(on_progress, batches)
+        )
+        _merge_stats(stats, batch)
+        # Los nack de reintento vuelven a pending: sin avance en la nube se repetirian.
+        if not batch.get("cleared") or not fresh or list_inbox_jobs(root) or not sage_ui_running():
+            break
+    else:
+        stats["more_pending"] = 1
+        on_log("Tope de " + str(MAX_PULLS_PER_CYCLE) + " tandas. Sigue en la proxima consulta.")
+    if batches and stats.get("cloud_empty"):
+        on_log(
+            "Cola vacia: todo cargado ("
+            + str(batches)
+            + " tanda(s), "
+            + str(stats.get("sent") or 0)
+            + " cargadas)"
+        )
     return stats
 
 
@@ -895,6 +938,7 @@ def _finish_cloud(
                 + " already="
                 + str(ack_res.get("alreadyConsumed") or 0)
             )
+            stats["cleared"] = int(stats.get("cleared") or 0) + len(ack_items)
         except Exception as exc:
             on_log("Ledger Bridge ack fallo: " + str(exc))
             stats["failed"] += 1
@@ -912,6 +956,8 @@ def _finish_cloud(
                 + " released="
                 + str(nack_res.get("released") or 0)
             )
+            if permanent:
+                stats["cleared"] = int(stats.get("cleared") or 0) + len(batch)
         except Exception as exc:
             on_log("Ledger Bridge nack fallo: " + str(exc))
             stats["failed"] += 1
