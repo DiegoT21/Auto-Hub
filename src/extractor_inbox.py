@@ -201,6 +201,7 @@ def process_extractor_outbox(
                 file_ok = False
             except Exception as exc:
                 on_log("ERROR auto " + label + ": " + str(exc))
+                on_log(incomplete_card(inv, str(getattr(exc, "reason", "") or exc)))
                 stats["failed"] += 1
                 file_ok = False
         _archive(path, folder / ("done" if file_ok else "error"))

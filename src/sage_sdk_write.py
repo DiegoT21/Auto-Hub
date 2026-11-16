@@ -828,6 +828,23 @@ def _sage_error_hint(text: str) -> str:
     return last_fail
 
 
+def _silent_exit_hint(text: str) -> str:
+    """Motivo cuando el host termina sin una linea ERROR."""
+    if not text.strip():
+        return "Sage no respondio: el proceso termino sin salida (Sage ocupado, cerrado o bloqueado por otro programa)."
+    lower = text.lower()
+    if "empresa abierta" in lower:
+        return "Sage se cerro despues de abrir la empresa, sin dar error (Sage ocupado o en uso por otro proceso)."
+    if "granted" not in lower:
+        return "Sage no dio acceso a la empresa (revisa Always Allow y que LYL 2025-2026 este abierta)."
+    return ""
+
+
+def _reason_text(hint: str) -> str:
+    text = re.sub(r"^\[TRACE\].*?(fail|ultimo_fail)\s*", "", hint.strip(), flags=re.I)
+    return re.sub(r"^error:\s*", "", text, flags=re.I).strip()
+
+
 def _dump_sage_fail(root: Path, label: str, text: str, on_log: Callable[[str], None]) -> None:
     try:
         from src.session_log import write_sage_fail
@@ -994,7 +1011,7 @@ def _run_writer(
                 on_log(stripped)
         if proc.returncode != 0:
             _dump_sage_fail(root, label, text, on_log)
-            hint = _sage_error_hint(text)
+            hint = _sage_error_hint(text) or _silent_exit_hint(text)
             msg = (
                 ("Conectar Sage" if auth_only else "Enviar a Sage")
                 + " salio con codigo "
@@ -1013,7 +1030,9 @@ def _run_writer(
                     + (", ".join(missing) if missing else "ver items_pendientes.txt")
                 )
                 raise MissingSageItems(msg, missing)
-            raise RuntimeError(msg)
+            exc = RuntimeError(msg)
+            exc.reason = _reason_text(hint) or msg  # type: ignore[attr-defined]
+            raise exc
         if not auth_only:
             sage_ref = _parse_sage_ref(text)
             sucursal = str((rows[0] or {}).get("sucursal") or "")

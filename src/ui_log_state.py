@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 STATE_NAME = "ui_logs.json"
+MAX_SAVED_CARDS = 600
 
 
 def _empty() -> dict[str, Any]:
@@ -137,7 +138,7 @@ def save(
         "ok": _as_count(ok),
         "err": _as_count(err),
         "skip": _as_count(skip),
-        "cards": [card for card in cards if isinstance(card, dict)],
+        "cards": [card for card in cards if isinstance(card, dict)][-MAX_SAVED_CARDS:],
     }
     fd, tmp_name = tempfile.mkstemp(
         prefix=path.name + ".",

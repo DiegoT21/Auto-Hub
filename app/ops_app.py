@@ -24,8 +24,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app import theme
-from src.failure_view import invoice_identity
-from app.components import btn, dashboard_card, fail_summary, glass_card, set_card_selected
+from src.failure_view import already_in_sage, invoice_identity, sent_documents
+from app.components import (
+    btn,
+    dashboard_card,
+    display_ref,
+    explain_failure,
+    fail_summary,
+    glass_card,
+    set_card_selected,
+)
 from app.dialogs import ask_confirm, show_error, show_info
 from app.user_log import classify, parse_invoice_card
 from src.app_update import restart_autohub, run_update
@@ -44,6 +52,7 @@ from src.sage_retry import (
 )
 from src.session_log import append as append_session_log
 from src.session_log import open_folder as open_logs_folder
+from src.ui_log_state import MAX_SAVED_CARDS
 from src.ui_log_state import load as load_ui_log_state
 from src.ui_log_state import save as save_ui_log_state
 
@@ -71,16 +80,14 @@ def _advice_for(card: dict, summary: str, detail: str) -> tuple[str, str, str]:
             expected,
             received,
         )
-    if card.get("retryable") or ("item" in text and "sage" in text):
-        return ("Crea el producto faltante en Sage y después usa Reintentar pendientes.", "", "")
-    if "cliente" in text:
-        return ("Revisa el cliente en Sage antes de reenviar la factura.", "", "")
-    if "incomplet" in text or "faltan items" in text:
-        return ("La factura llegó sin todas sus líneas. Corrígelas en el origen; reenviarla ahora va a fallar igual.", "", "")
     if card.get("ok"):
         return ("Esta factura ya quedó guardada en Sage.", "", "")
-    return ("Revisa el detalle. Reenviarla sin corregir el dato va a fallar otra vez.", "", "")
+    if "total no cuadra" in text and match:
+        received = "$" + match.group(1)
+        expected = "$" + match.group(2)
+    return (explain_failure(card)[1], expected, received)
 
+MAX_CARDS_PER_COLUMN = 40
 LOGO_ICO = ROOT / "assets" / "autohub.ico"
 APP_ID = "Posper.AutoHub.1"
 CONFIG_PATH = Path(os.environ.get("AUTOHUB_CONFIG", ROOT / "config" / "config.json"))
@@ -124,7 +131,7 @@ class AutoHubApp(ctk.CTk):
         self._n_ok = int(saved_logs["ok"])
         self._n_err = int(saved_logs["err"])
         self._n_skip = int(saved_logs["skip"])
-        self._cards: deque[dict] = deque(saved_logs["cards"])
+        self._cards: deque[dict] = deque(saved_logs["cards"], maxlen=MAX_SAVED_CARDS)
         self._skip_next_err = False
         self._current = ""
         self._last_err_text = ""
@@ -151,6 +158,13 @@ class AutoHubApp(ctk.CTk):
         self._log("Sistema listo")
         self._refresh_status()
         self._refresh_retry_btn()
+        if self.config.get("auto_start", True) and is_configured(ROOT, self.config):
+            self.after(3000, self._auto_start)
+
+    def _auto_start(self) -> None:
+        if not self._auto_on:
+            self._log("Automatico al abrir: buscando facturas.")
+            self.on_toggle_auto()
 
     def _maximize(self) -> None:
         try:
@@ -376,7 +390,6 @@ class AutoHubApp(ctk.CTk):
         )
         self.detail_close = btn(head, text="✕", variant="ghost", width=28, height=24, command=self._clear_selection)
         self.detail_close.pack(side="right")
-        self.detail_kind.pack(side="right", padx=(0, 6))
         body = ctk.CTkScrollableFrame(panel, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=8, pady=4)
         self.detail_body = body
@@ -412,7 +425,7 @@ class AutoHubApp(ctk.CTk):
         nums = ctk.CTkFrame(advice_box, fg_color="transparent")
         self.detail_nums = nums
         self.detail_values = {}
-        for title in ("ESPERADO", "RECIBIDO"):
+        for title in ("FACTURA (PSKLOUD)", "SAGE CALCULARÍA"):
             cell = ctk.CTkFrame(nums, fg_color="#FFFFFF", corner_radius=8, border_width=1, border_color=theme.GLASS_BORDER)
             cell.pack(side="left", fill="x", expand=True, padx=(0, 6))
             ctk.CTkLabel(cell, text=title, font=("Segoe UI", 9, "bold"), text_color=theme.TEXT_MUTED).pack(anchor="w", padx=8, pady=(6, 0))
@@ -509,17 +522,34 @@ class AutoHubApp(ctk.CTk):
         for card in pending:
             card["retryable"] = True
         queued = {invoice_identity(card) for card in pending}
+        sent = self._sent_docs()
         latest: dict = {}
-        order: list = []
         for card in self._cards:
+            # Tarjetas viejas sin lineas ni total ("fallida FE...") repiten una AH ya mostrada.
+            if card.get("ok") and not card.get("lines") and not str(card.get("ref") or "").upper().startswith("AH"):
+                continue
             key = invoice_identity(card)
-            if key in latest:
-                order.remove(key)
+            latest.pop(key, None)
             latest[key] = card
-            order.append(key)
+        order = list(latest)
         ok_cards = [latest[key] for key in reversed(order) if latest[key].get("ok")]
-        failed = [latest[key] for key in reversed(order) if not latest[key].get("ok") and key not in queued]
+        failed = [
+            latest[key]
+            for key in reversed(order)
+            if not latest[key].get("ok") and key not in queued and not already_in_sage(latest[key], sent)
+        ]
         return ok_cards, list(reversed(pending)), failed
+
+    def _sent_docs(self) -> set:
+        path = ROOT / "state" / "sage_sent.json"
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            return set()
+        if getattr(self, "_sent_stamp", None) != stamp:
+            self._sent_stamp = stamp
+            self._sent_cache = sent_documents(ROOT)
+        return self._sent_cache
 
     def _matches(self, card: dict) -> bool:
         query = self._query.strip().lower()
@@ -537,16 +567,21 @@ class AutoHubApp(ctk.CTk):
             cache = host._cards_cache = {}
             host._cards_order = []
             host._empty = ctk.CTkLabel(host, text="", font=theme.FONT_SMALL, text_color=theme.TEXT_SECONDARY, anchor="w")
+            host._more = ctk.CTkLabel(host, text="", font=theme.FONT_SMALL, text_color=theme.TEXT_MUTED, anchor="w")
         shown = []
         seen = set()
+        matched = 0
         for card in cards:
             key = invoice_identity(card)
             if key in seen or not self._matches(card):
                 continue
             seen.add(key)
-            shown.append((key, card))
+            matched += 1
+            if len(shown) < MAX_CARDS_PER_COLUMN:
+                shown.append((key, card))
+        visible = {key for key, _ in shown}
         for key in list(cache):
-            if key not in seen:
+            if key not in visible:
                 cache.pop(key)[1].destroy()
         rebuilt = False
         for key, card in shown:
@@ -580,6 +615,12 @@ class AutoHubApp(ctk.CTk):
         else:
             host._empty.configure(text=empty)
             host._empty.pack(anchor="w", pady=6)
+        host._more.pack_forget()
+        if matched > len(shown):
+            host._more.configure(
+                text="Mostrando las " + str(len(shown)) + " más recientes de " + str(matched) + ". Usa Buscar para ver otras."
+            )
+            host._more.pack(anchor="w", pady=6)
 
     def _card_for(self, key) -> dict | None:
         for column in (self.ok_host, self.att_host):
@@ -700,7 +741,7 @@ class AutoHubApp(ctk.CTk):
         if not card:
             self.detail_content.pack_forget()
             self.detail_empty.pack(anchor="w", pady=8)
-            self.detail_kind.configure(text="")
+            self.detail_kind.pack_forget()
             self.detail_retry.pack_forget()
             self.detail_close_btn.pack_forget()
             return
@@ -714,7 +755,9 @@ class AutoHubApp(ctk.CTk):
         color = theme.WARNING if retryable else (theme.SUCCESS if card.get("ok") else theme.DANGER)
         soft = "#FFFBEB" if retryable else ("#ECFDF5" if card.get("ok") else "#FEF2F2")
         self.detail_kind.configure(text=kind, text_color=color, fg_color=soft)
-        self.detail_ref.configure(text="#" + str(card.get("ref") or "Factura").lstrip("#"))
+        if not self.detail_kind.winfo_manager():
+            self.detail_kind.pack(side="right", padx=(0, 6))
+        self.detail_ref.configure(text=display_ref(card))
         cust = str(card.get("customer_name") or card.get("customer_id") or "Sin cliente")
         self.detail_cust.configure(text="Cliente:  " + cust)
         when = str(card.get("date") or "").strip()
@@ -727,8 +770,8 @@ class AutoHubApp(ctk.CTk):
         advice, expected, received = _advice_for(card, summary, detail)
         self.detail_advice.configure(text=advice)
         if expected and received:
-            self.detail_values["ESPERADO"].configure(text=expected)
-            self.detail_values["RECIBIDO"].configure(text=received)
+            self.detail_values["SAGE CALCULARÍA"].configure(text=expected)
+            self.detail_values["FACTURA (PSKLOUD)"].configure(text=received)
             if not self.detail_nums.winfo_manager():
                 self.detail_nums.pack(fill="x", padx=10, pady=(0, 8))
         else:
@@ -822,6 +865,16 @@ class AutoHubApp(ctk.CTk):
                 data = parse_invoice_card(text)
                 if not data:
                     continue
+                last = self._cards[-1] if self._cards else None
+                if (
+                    last
+                    and last.get("partial")
+                    and not data.get("ok")
+                    and str(last.get("ref")).lstrip("#") == str(data.get("ref")).lstrip("#")
+                ):
+                    self._cards[-1] = data
+                    cards_changed = True
+                    continue
                 self._cards.append(data)
                 cards_changed = True
                 if data.get("ok"):
@@ -849,16 +902,18 @@ class AutoHubApp(ctk.CTk):
                     continue
                 if not failed_ref:
                     continue
+                ref, _sep, cust = failed_ref.partition(" · ")
                 self._cards.append(
                     {
                         "ok": False,
-                        "ref": (failed_ref or "Factura").split(" · ")[0],
+                        "ref": ref or "Factura",
                         "date": "",
                         "customer_id": "",
-                        "customer_name": "",
+                        "customer_name": cust.strip(),
                         "total": "",
                         "detail": text,
                         "lines": [],
+                        "partial": True,
                     }
                 )
                 self._n_err += 1

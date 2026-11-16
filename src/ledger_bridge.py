@@ -875,6 +875,7 @@ def process_inbox_to_sage(
                 file_ok = False
             except Exception as exc:
                 on_log("ERROR auto " + label + ": " + str(exc))
+                on_log(incomplete_card(inv, str(getattr(exc, "reason", "") or exc)))
                 stats["failed"] += 1
                 permanent, error = cloud_failure(str(exc))
                 _queue_nack(nack_permanent if permanent else nack_retry, item, error)
