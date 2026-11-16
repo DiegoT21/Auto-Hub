@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from src.invoice_lines import incomplete_card, pre_sage_block_reason
+
 FAILED_NAME = "sage_failed.json"
 PENDING_ITEMS_NAME = "items_pendientes.txt"
 
@@ -189,6 +191,17 @@ def remove_failed(root: Path, key: str) -> None:
         _save_failed(root, data)
 
 
+def _mark_retry_error(root: Path, key: str, reason: str) -> None:
+    """Los items ya existen; el motivo real reemplaza al 'faltan items' original."""
+    data = load_failed(root)
+    entry = (data.get("invoices") or {}).get(key)
+    if not entry:
+        return
+    entry["missing_skus"] = []
+    entry["error"] = reason[:500]
+    _save_failed(root, data)
+
+
 def write_pending_items_report(root: Path) -> Path:
     from src.session_log import log_dir
 
@@ -280,6 +293,14 @@ def retry_failed_invoices(
         key = str(entry.get("key") or _invoice_key(rows))
         label = str(entry.get("numero_factura") or entry.get("factura_id") or key)
         cliente = str(entry.get("cliente") or "")
+        blocked = pre_sage_block_reason(rows)
+        if blocked:
+            failed += 1
+            reason = "La copia guardada no sirve: " + blocked + " Reenvíala desde el Extractor."
+            _mark_retry_error(root, key, reason)
+            log("ERROR fallida " + label + ": " + reason)
+            log(incomplete_card(rows, reason))
+            continue
         try:
             log("Enviando fallida " + label + " | " + cliente)
             run_test_company_write(root, rows, on_log=log, hold_missing=True)
@@ -291,7 +312,10 @@ def retry_failed_invoices(
             log("Sigue sin item en Sage: " + label + " | " + ", ".join(exc.missing or []))
         except Exception as exc:
             failed += 1
+            reason = str(getattr(exc, "reason", "") or exc)
+            _mark_retry_error(root, key, reason)
             log("ERROR fallida " + label + ": " + str(exc))
+            log(incomplete_card(rows, reason))
     remaining = failed_count(root)
     log(
         "Fallidas: cargadas "
