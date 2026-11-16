@@ -1,4 +1,4 @@
-"""Automatico consulta la cola cada 6 horas; Consultar ahora fuerza un ciclo.
+"""Automatico consulta la cola cada 30 minutos; Consultar ahora fuerza un ciclo.
 
 Si el ciclo llego al tope de tandas, la siguiente consulta va en 2 minutos.
 """
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-POLL_INTERVAL_MS = 6 * 60 * 60 * 1000
+POLL_INTERVAL_MS = 30 * 60 * 1000
 FOLLOW_UP_MS = 2 * 60 * 1000
 
 
