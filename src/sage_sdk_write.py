@@ -368,7 +368,12 @@ def _coerce_row(rec: dict[str, Any]) -> dict[str, Any]:
     documento = str(rec.get("documento") or "").strip()
     if not documento:
         documento = _short_documento(rec)
-    return {
+    fixed = {
+        key: _raw_number(rec[key]) for key in ("importe_linea", "montoneto") if rec.get(key) not in (None, "")
+    }
+    if "importe_linea" in fixed:
+        fixed["importe_linea"] = _money(fixed["importe_linea"])
+    return fixed | {
         "factura_id": str(rec.get("factura_id") or ""),
         "numero_factura": str(rec.get("numero_factura") or ""),
         "documento": documento,

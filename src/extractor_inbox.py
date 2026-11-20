@@ -21,6 +21,7 @@ from src.invoice_lines import (
     incomplete_card,
     is_known_incomplete,
     pre_sage_block_reason,
+    prepare_invoice,
     remember_incomplete,
 )
 
@@ -148,6 +149,7 @@ def process_extractor_outbox(
 
         file_ok = True
         for inv in group_invoices(rows):
+            inv = prepare_invoice(inv, root)
             label = str(inv[0].get("factura_id") or inv[0].get("numero_factura") or "?")
             cliente = str(inv[0].get("cliente_nombre") or "")
             try:

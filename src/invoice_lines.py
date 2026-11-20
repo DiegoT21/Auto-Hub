@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,19 @@ def _dec(value: Any) -> Decimal:
         return Decimal("0")
 
 
+def _fixed_amount(row: dict[str, Any]) -> Decimal | None:
+    """Importe exacto de una parte de kit; el resto de lineas usa cantidad x precio."""
+    value = row.get("importe_linea")
+    if value in (None, ""):
+        return None
+    return _dec(value)
+
+
 def line_net(row: dict[str, Any]) -> Decimal:
     """Lo maximo que puede aportar la linea: sin descuento, con descuento o el total que vino."""
+    fixed = _fixed_amount(row)
+    if fixed is not None:
+        return fixed
     qty = _dec(row.get("cantidad"))
     price = _dec(row.get("precio_unitario"))
     discount = _dec(row.get("dsctounit"))
@@ -91,24 +103,26 @@ def estimated_sage_itbms(rows: list[dict[str, Any]], *, tax_discount_line: bool 
         return Decimal("0")
     tax = Decimal("0")
     for row in rows:
-        qty = _dec(row.get("cantidad"))
-        price = _dec(row.get("precio_unitario"))
-        amount = _round_money(qty * price)
-        tax += _round_money(amount * rate)
+        tax += _round_money(_line_amount(row) * rate)
     disc_amt, _ = invoice_discount(rows)
     if tax_discount_line and disc_amt > 0:
         tax += _round_money(-disc_amt * rate)
     return _round_money(tax)
 
 
+def _line_amount(row: dict[str, Any]) -> Decimal:
+    """Importe que RunSageHost escribe en la linea."""
+    fixed = _fixed_amount(row)
+    if fixed is not None:
+        return _round_money(fixed)
+    qty = _dec(row.get("cantidad"))
+    price = _round_money(_dec(row.get("precio_unitario")))
+    return _round_money(qty * price)
+
+
 def lines_gross_total(rows: list[dict[str, Any]]) -> Decimal:
     """Suma cantidad * precio_unitario (como escribe RunSageHost por linea)."""
-    total = Decimal("0")
-    for row in rows:
-        qty = _dec(row.get("cantidad"))
-        price = _dec(row.get("precio_unitario"))
-        total += _round_money(qty * price)
-    return _round_money(total)
+    return _round_money(sum((_line_amount(row) for row in rows), Decimal("0")))
 
 
 def estimated_sage_total(rows: list[dict[str, Any]], *, tax_discount_line: bool = True) -> Decimal:
@@ -181,13 +195,147 @@ def itbms_mismatch_reason(rows: list[dict[str, Any]]) -> str:
 
 def pre_sage_block_reason(rows: list[dict[str, Any]]) -> str:
     """Motivo para no escribir en Sage antes de llamar al host."""
-    missing = incomplete_reason(rows)
-    if missing:
-        return missing
-    itbms = itbms_mismatch_reason(rows)
-    if itbms:
-        return itbms
-    return total_mismatch_reason(rows)
+    reason = incomplete_reason(rows) or itbms_mismatch_reason(rows) or total_mismatch_reason(rows)
+    if not reason:
+        return ""
+    rec = rows[0] if rows else {}
+    doc = str(rec.get("documento") or rec.get("numero_factura") or rec.get("factura_id") or "").strip()
+    return (doc + ": " + reason) if doc else reason
+
+
+PRICE_TOLERANCE = Decimal("0.005")
+SUBSET_TOLERANCE = Decimal("0.02")
+MAX_SUBSET_LINES = 16
+
+
+def _net_unit_price(row: dict[str, Any]) -> Decimal | None:
+    for key in ("preciofin", "precio_final", "precioFin"):
+        if row.get(key) not in (None, ""):
+            return _dec(row.get(key))
+    for key in ("montoneto", "monto_neto", "montoNeto"):
+        if row.get(key) not in (None, ""):
+            qty = _dec(row.get("cantidad"))
+            return _dec(row.get(key)) / qty if qty else None
+    return None
+
+
+def _flags_from_subtotal(rows: list[dict[str, Any]]) -> list[bool] | None:
+    """G Core no trae preciofin: el subtotal dice que descuentos ya estaban restados."""
+    subtotal = header_subtotal(rows)
+    if subtotal <= 0:
+        return None
+    gross = sum((_dec(r.get("cantidad")) * _dec(r.get("precio_unitario")) for r in rows), Decimal("0"))
+    discounts = [
+        (i, _dec(r.get("cantidad")) * _dec(r.get("dsctounit")))
+        for i, r in enumerate(rows)
+        if _dec(r.get("dsctounit")) > 0
+    ]
+    if not discounts or len(discounts) > MAX_SUBSET_LINES:
+        return None
+    pending = gross - subtotal
+    n = len(discounts)
+    # Primero las combinaciones con mas descuentos pendientes: la forma normal es la comun.
+    for mask in sorted(range(1 << n), key=lambda m: -bin(m).count("1")):
+        applied = sum((d for bit, (_i, d) in enumerate(discounts) if mask >> bit & 1), Decimal("0"))
+        if abs(applied - pending) <= SUBSET_TOLERANCE:
+            in_price = {i for bit, (i, _d) in enumerate(discounts) if not mask >> bit & 1}
+            return [i in in_price for i in range(len(rows))]
+    return None
+
+
+def discount_in_price_flags(rows: list[dict[str, Any]]) -> list[bool]:
+    """Por linea: True si precio_unitario ya trae el descuento y dsctounit solo lo informa."""
+    flags: list[bool] = []
+    for row in rows:
+        if _dec(row.get("dsctounit")) <= 0:
+            flags.append(False)
+            continue
+        net = _net_unit_price(row)
+        if net is None:
+            return _flags_from_subtotal(rows) or [False] * len(rows)
+        flags.append(abs(_dec(row.get("precio_unitario")) - net) <= PRICE_TOLERANCE)
+    return flags
+
+
+def normalize_discounts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Quita dsctounit de las lineas con el precio ya rebajado para no restarlo dos veces."""
+    out = []
+    for row, in_price in zip(rows, discount_in_price_flags(rows)):
+        if in_price:
+            row = dict(row, dsctounit=0, descuento_en_precio=True)
+        out.append(row)
+    return out
+
+
+KIT_MAP_NAME = "kit_map.json"
+
+
+def _kit_key(code: Any) -> str:
+    return re.sub(r"[\s\-_.]", "", str(code or "").upper())
+
+
+def load_kit_map(root: Path | None) -> dict[str, list[dict[str, Any]]]:
+    """config/kit_map.json: {"kits": {"GEP-9010": [{"sku", "cantidad", "porcentaje"}, ...]}}."""
+    if root is None:
+        return {}
+    path = Path(root) / "config" / KIT_MAP_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    kits: dict[str, list[dict[str, Any]]] = {}
+    for code, parts in ((data or {}).get("kits") or {}).items():
+        parts = [p for p in (parts or []) if isinstance(p, dict) and str(p.get("sku") or "").strip()]
+        share = sum((_dec(p.get("porcentaje")) for p in parts), Decimal("0"))
+        if parts and abs(share - 100) <= Decimal("0.01"):
+            kits[_kit_key(code)] = parts
+    return kits
+
+
+def expand_kits(rows: list[dict[str, Any]], kits: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Cambia cada linea de kit por una linea por componente de Sage con su parte del neto."""
+    if not kits:
+        return rows
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        code = row.get("item_codigo") or row.get("codigo")
+        parts = kits.get(_kit_key(code))
+        if not parts:
+            out.append(row)
+            continue
+        qty = _dec(row.get("cantidad")) or Decimal("1")
+        if row.get("montoneto") not in (None, ""):
+            net = _round_money(_dec(row.get("montoneto")))
+        else:
+            net = _round_money(qty * (_dec(row.get("precio_unitario")) - _dec(row.get("dsctounit"))))
+        given = Decimal("0")
+        for n, part in enumerate(parts, start=1):
+            amount = net - given if n == len(parts) else _round_money(net * _dec(part.get("porcentaje")) / 100)
+            given += amount
+            part_qty = qty * (_dec(part.get("cantidad")) or Decimal("1"))
+            sku = str(part.get("sku")).strip()
+            out.append(
+                dict(
+                    row,
+                    item_codigo=sku,
+                    codigo=sku,
+                    cantidad=float(part_qty),
+                    precio_unitario=float((amount / part_qty).quantize(Decimal("0.00001"))),
+                    importe_linea=float(amount),
+                    montoneto=float(amount),
+                    total_linea=float(amount),
+                    dsctounit=0,
+                    descripcion=str(part.get("descripcion") or row.get("descripcion") or sku)
+                    + " (kit " + str(code) + ")",
+                    kit_origen=str(code),
+                )
+            )
+    return out
+
+
+def prepare_invoice(rows: list[dict[str, Any]], root: Path | None = None) -> list[dict[str, Any]]:
+    """Lineas listas para Sage: descuentos sin duplicar y kits partidos en componentes."""
+    return expand_kits(normalize_discounts(rows), load_kit_map(root))
 
 
 def incomplete_reason(rows: list[dict[str, Any]]) -> str:

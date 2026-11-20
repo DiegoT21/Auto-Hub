@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from src.invoice_lines import incomplete_card, pre_sage_block_reason
+from src.invoice_lines import incomplete_card, pre_sage_block_reason, prepare_invoice
 
 FAILED_NAME = "sage_failed.json"
 PENDING_ITEMS_NAME = "items_pendientes.txt"
@@ -291,6 +291,7 @@ def retry_failed_invoices(
     for entry in items:
         rows = list(entry.get("rows") or [])
         key = str(entry.get("key") or _invoice_key(rows))
+        rows = prepare_invoice(rows, root)
         label = str(entry.get("numero_factura") or entry.get("factura_id") or key)
         cliente = str(entry.get("cliente") or "")
         blocked = pre_sage_block_reason(rows)

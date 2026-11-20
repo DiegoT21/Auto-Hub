@@ -137,12 +137,14 @@ def explain_failure(payload: dict[str, Any]) -> tuple[str, str]:
     low = detail.lower()
     missing = _missing_skus(payload)
     if missing:
-        word = "item" if len(missing) == 1 else "items"
         shown = ", ".join(missing[:3]) + (" +" + str(len(missing) - 3) if len(missing) > 3 else "")
+        one = len(missing) == 1
         return (
-            "Faltan " + str(len(missing)) + " " + word + " en Sage: " + shown,
-            "Crea " + ("ese item" if len(missing) == 1 else "esos items")
-            + " en el inventario de Sage con el mismo código y pulsa Reintentar pendientes.",
+            ("Artículo " if one else "Artículos ") + shown
+            + (" no existe" if one else " no existen") + " en Sage ni en el listado de kits",
+            "Crea " + ("ese item" if one else "esos items")
+            + " en el inventario de Sage con el mismo código, o agrégalo a config\\kit_map.json"
+            " si es un kit, y pulsa Reintentar pendientes.",
         )
     if "total no cuadra" in low or "itbms no cuadra" in low:
         return (

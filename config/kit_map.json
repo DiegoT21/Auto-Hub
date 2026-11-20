@@ -1,0 +1,10 @@
+{
+  "_formato": "codigo del kit en PsKloud -> componentes que existen en Sage. porcentaje = parte del neto de la linea (deben sumar 100). cantidad = unidades del componente por cada kit.",
+  "_ejemplo": {
+    "KIT-EJEMPLO": [
+      {"sku": "COMPONENTE-A", "cantidad": 1, "porcentaje": 60},
+      {"sku": "COMPONENTE-B", "cantidad": 2, "porcentaje": 40}
+    ]
+  },
+  "kits": {}
+}

@@ -24,6 +24,7 @@ from src.invoice_lines import (
     incomplete_card,
     is_known_incomplete,
     pre_sage_block_reason,
+    prepare_invoice,
     remember_incomplete,
 )
 
@@ -429,6 +430,9 @@ def pending_jobs(payload: Any) -> list[dict[str, Any]]:
                     merged["factura_id"] = header["factura_id"]
                 if not (merged.get("factura_id") or merged.get("numero_factura")):
                     continue
+                # En G Core totalLinea es el montoneto de PsKloud (ya con descuento).
+                if line.get("totalLinea") not in (None, "") and merged.get("montoneto") in (None, ""):
+                    merged["montoneto"] = line["totalLinea"]
                 rows.append(_coerce_row(merged))
             if not rows:
                 continue
@@ -810,6 +814,7 @@ def process_inbox_to_sage(
             continue
         file_ok = True
         for inv in group_invoices(rows):
+            inv = prepare_invoice(inv, root)
             label = str(inv[0].get("factura_id") or inv[0].get("numero_factura") or "?")
             cliente = str(inv[0].get("cliente_nombre") or "")
             tick(label)

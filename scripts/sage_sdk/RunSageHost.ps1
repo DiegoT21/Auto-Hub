@@ -202,10 +202,17 @@ function Test-DiscountInPrice($records, $first) {
     if ($subtotal -lt 0) { return $false }
     $gross = [decimal]0
     foreach ($rec in @($records)) {
-        $qty = Get-RecordDecimal $rec "cantidad" 1
-        $gross += Round-Money ($qty * (Round-Money (Get-RecordDecimal $rec "precio_unitario" 0)))
+        $gross += Get-LineAmount $rec
     }
     return ([math]::Abs([decimal]($gross - $subtotal)) -le [decimal]0.02)
+}
+
+# Las partes de un kit traen importe_linea exacto; cantidad x precio redondeado perderia centavos.
+function Get-LineAmount($rec) {
+    $fixed = Get-RecordDecimal $rec "importe_linea" -1
+    if ($fixed -ge 0) { return (Round-Money $fixed) }
+    $qty = Get-RecordDecimal $rec "cantidad" 1
+    return (Round-Money ($qty * (Round-Money (Get-RecordDecimal $rec "precio_unitario" 0))))
 }
 
 function Format-DescuentoDesc([decimal]$pct) {
@@ -3629,7 +3636,10 @@ try {
             }
             $qty = Get-RecordDecimal $rec "cantidad" 1
             $price = Round-Money (Get-RecordDecimal $rec "precio_unitario" 0)
-            $amount = Round-Money ($qty * $price)
+            $amount = Get-LineAmount $rec
+            if ((Get-RecordDecimal $rec "importe_linea" -1) -ge 0 -and $qty -ne 0) {
+                $price = [decimal]::Round([decimal]($amount / $qty), 5)
+            }
             $netSum += $amount
             Set-SageProp $line "Description" $desc | Out-Null
             Set-SageProp $line "Quantity" $qty | Out-Null
@@ -3713,8 +3723,10 @@ try {
             $tol = [decimal]0.03
             $okTotal = ([math]::Abs([decimal]($docTotal - $estDoc)) -le $tol) -or ([math]::Abs([decimal]($docTotal - $estCalc)) -le $tol)
             if (-not $okTotal) {
+                $docLabel = Get-RecordText $first "documento"
+                if (-not $docLabel) { $docLabel = Get-RecordText $first "numero_factura" }
                 Fail 17 (
-                    "Total no cuadra: factura " + $docTotal +
+                    "Total no cuadra en " + $docLabel + " (" + $refNumber + "): factura " + $docTotal +
                     ", lineas netas " + $netSum +
                     ", estimado " + $estCalc +
                     " (dif " + [math]::Abs([decimal]($docTotal - $estCalc)) +
